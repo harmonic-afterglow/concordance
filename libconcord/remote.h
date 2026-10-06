@@ -381,8 +381,6 @@ protected:
     virtual uint16_t GetWord(uint8_t *x) { return x[0]<<8 | x[1]; };
     virtual uint32_t GetWord32(uint8_t *x) { return x[0]<<24 | x[1]<<16
         | x[2]<<8 | x[3]; };
-    virtual int ReadRegion(uint8_t region, uint32_t &len, uint8_t *rd,
-        lc_callback cb, void *cb_arg, uint32_t cb_stage);
     virtual int SendLearnStart();
     virtual int SendLearnStop();
     virtual int ReadIrData(uint32_t *freq, uint32_t **ir_signal,
@@ -395,6 +393,8 @@ protected:
 public:
     CRemoteZ_USBNET() {};
     virtual ~CRemoteZ_USBNET() {};
+    virtual int ReadRegion(uint8_t region, uint32_t &len, uint8_t *rd,
+        lc_callback cb, void *cb_arg, uint32_t cb_stage);
     int UpdateConfig(const uint32_t len, const uint8_t *wr,
         lc_callback cb, void *cb_arg, uint32_t cb_stage,
         uint32_t xml_size=0, uint8_t *xml=NULL);

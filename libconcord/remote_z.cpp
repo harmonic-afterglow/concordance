@@ -886,6 +886,8 @@ int CRemoteZ_USBNET::ReadIrStream(uint32_t *freq, uint32_t **ir_signal,
 int CRemoteZ_USBNET::ReadRegion(uint8_t region, uint32_t &rgn_len, uint8_t *rd,
                                 lc_callback cb, void *cb_arg, uint32_t cb_stage)
 {
+    // With a buffer, rgn_len comes in as its size.
+    const uint32_t capacity = rgn_len;
     int err = 0;
     int cb_count = 0;
     uint8_t rsp[60];
@@ -911,6 +913,15 @@ int CRemoteZ_USBNET::ReadRegion(uint8_t region, uint32_t &rgn_len, uint8_t *rd,
     }
     ParseParams(rlen, rsp, pl);
     rgn_len = GetWord32(pl.p[0]);
+    if (rd && rgn_len > capacity) {
+        // It grew since it was measured (the remote rewrites its state files
+        // as it runs). Reading it would overrun rd.
+        debug("region %d is %u bytes, the buffer %u", region, rgn_len,
+              capacity);
+        // End the read the remote has started, so it can be asked again.
+        TCPSendAndCheck(COMMAND_READ_REGION_DONE, 3, cmd);
+        return LC_ERROR_READ;
+    }
 
     debug("READ_REGION_DATA");
     uint32_t pkt_len;
@@ -936,7 +947,15 @@ int CRemoteZ_USBNET::ReadRegion(uint8_t region, uint32_t &rgn_len, uint8_t *rd,
             return LC_ERROR_INVALID_DATA_FROM_REMOTE;
         }
         ParseParams(rlen, tmp_pkt, pl);
+        if (pl.count < 3) {
+            debug("Incomplete response from remote");
+            return LC_ERROR_INVALID_DATA_FROM_REMOTE;
+        }
         pkt_len = GetWord32(pl.p[2]);
+        if (pkt_len > data_to_read) {
+            debug("Remote sent %u bytes with %u left", pkt_len, data_to_read);
+            return LC_ERROR_INVALID_DATA_FROM_REMOTE;
+        }
         data_to_read -= pkt_len;
 
         if (rd) {
@@ -1203,7 +1222,9 @@ int CRemoteZ_Base::ReadFlash(uint32_t addr, const uint32_t len, uint8_t *rd,
                              unsigned int protocol, bool verify, lc_callback cb,
                              void *cb_arg, uint32_t cb_stage)
 {
-    uint32_t tmp;
+    // ReadRegion is told how much rd holds; the region may have grown since
+    // its size was measured, and must not be written past the buffer.
+    uint32_t tmp = len;
     return ReadRegion(addr, tmp, rd, cb, cb_arg, cb_stage);
 }
 
@@ -1235,6 +1256,8 @@ int FindEndSeq(uint8_t *pkt_1, uint8_t *pkt_2)
 int CRemoteZ_HID::ReadRegion(uint8_t region, uint32_t &rgn_len, uint8_t *rd,
                              lc_callback cb, void *cb_arg, uint32_t cb_stage)
 {
+    // With a buffer, rgn_len comes in as its size.
+    const uint32_t capacity = rgn_len;
     int err = 0;
     int cb_count = 0;
     uint8_t rsp[60];
@@ -1326,6 +1349,11 @@ int CRemoteZ_HID::ReadRegion(uint8_t region, uint32_t &rgn_len, uint8_t *rd,
             memcpy(&prev_pkt_tail, &rsp[56], 3);
 
             if (rd) {
+                if (rgn_len > capacity) {
+                    debug("region %d is over %u bytes, the buffer %u", region,
+                          rgn_len, capacity);
+                    return LC_ERROR_READ;
+                }
                 memcpy(rd_ptr, &rsp[5], rlen);
                 rd_ptr += rlen;
             }

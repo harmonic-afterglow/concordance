@@ -1013,15 +1013,31 @@ int read_config_from_remote(uint8_t **out, uint32_t *size, lc_callback cb,
         }
     }
 
-    *size = ri.config_bytes_used;
-    *out = new uint8_t[*size];
-
-    if ((err = rmt->ReadFlash(ri.arch->config_base, *size, *out, ri.protocol,
-                              false, cb, cb_arg, LC_CB_STAGE_READ_CONFIG))) {
-        return LC_ERROR_READ;
+    // A usbnet remote's size comes from GetIdentity, and the remote rewrites
+    // its state files as it runs: the region can grow before it is read, and
+    // the read then stops rather than overrun the buffer. Measure it again
+    // and retry.
+    for (int attempt = 0; ; attempt++) {
+        if (attempt > 0) {
+            debug("config changed size; measuring it again");
+            if ((err = ((CRemoteZ_USBNET*)rmt)->ReadRegion(
+                          REGION_USER_CONFIG, ri.config_bytes_used, NULL,
+                          NULL, NULL, 0))) {
+                return LC_ERROR_READ;
+            }
+        }
+        *size = ri.config_bytes_used;
+        *out = new uint8_t[*size];
+        if (!rmt->ReadFlash(ri.arch->config_base, *size, *out, ri.protocol,
+                            false, cb, cb_arg, LC_CB_STAGE_READ_CONFIG)) {
+            return 0;
+        }
+        delete[] *out;
+        *out = NULL;
+        if (!is_usbnet_remote() || attempt == 2) {
+            return LC_ERROR_READ;
+        }
     }
-
-    return 0;
 }
 
 int _write_config_to_remote(lc_callback cb, void *cb_arg, uint32_t cb_stage)
