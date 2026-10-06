@@ -93,6 +93,10 @@ struct Connection {
     uint16_t mss;
     std::vector<uint8_t> unacked; // bytes from snd_una onwards
     std::vector<uint8_t> received;
+    // Where in `received` each of the remote's pushes ends. libconcord's
+    // protocol has no length field: a reply is what the remote sent in one
+    // push, and a read must return exactly that, as a socket does.
+    std::vector<size_t> pushes;
     unsigned long sent_at;        // ms, when the oldest unacked byte was sent
     unsigned int rto;
     unsigned int retransmits;
@@ -112,6 +116,9 @@ struct Link {
     uint16_t ip_id;
     uint16_t next_port;
     Connection conn[MAX_CONNECTIONS];
+    // A read that times out mid-frame returns the packets it has; the rest of
+    // the frame starts the next read. Kept here and joined, never dropped.
+    std::vector<uint8_t> rx_partial;
 };
 
 Link link;
@@ -482,6 +489,8 @@ void handle_tcp(const uint8_t *seg, unsigned int len)
         }
         if (dlen) {
             c.received.insert(c.received.end(), data, data + dlen);
+            if (flags & TCP_PSH)
+                c.pushes.push_back(c.received.size());
             c.rcv_nxt += dlen;
             acknowledge = true;
         }
@@ -532,54 +541,125 @@ void handle_ip(const uint8_t *src_mac, const uint8_t *p, unsigned int len)
     }
 }
 
-void handle_frame(uint8_t *frame, unsigned int len)
+uint32_t trailer(const uint8_t *p)
 {
-    if (len < 18)
-        return;
-    // The trailer is a CRC32 of the frame. A sender that pads short
-    // transfers leaves a byte after it; accept either.
-    unsigned int n = len - 4;
-    uint32_t crc = frame[n] | (frame[n + 1] << 8) | (frame[n + 2] << 16)
-        | ((uint32_t)frame[n + 3] << 24);
-    if (crc32(frame, n) != crc && len >= 19) {
-        n = len - 5;
-        crc = frame[n] | (frame[n + 1] << 8) | (frame[n + 2] << 16)
-            | ((uint32_t)frame[n + 3] << 24);
-        if (crc32(frame, n) != crc) {
-            debug("dropping a %u byte frame with a bad CRC", len);
-            return;
-        }
-    }
+    return p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+void dispatch(uint8_t *frame, unsigned int len)
+{
     const uint16_t ethertype = get16(frame + 12);
     if (ethertype == ETH_ARP)
-        handle_arp(frame + 14, n - 14);
+        handle_arp(frame + 14, len - 14);
     else if (ethertype == ETH_IP)
-        handle_ip(frame + 6, frame + 14, n - 14);
+        handle_ip(frame + 6, frame + 14, len - 14);
+}
+
+const unsigned int LENGTH_UNKNOWN = 0xFFFFFFFF;
+
+/*
+ * The length of the Ethernet frame starting at p, without its CRC, as its own
+ * headers state it: 0 when too little of it has arrived to tell, and
+ * LENGTH_UNKNOWN for a frame that does not say.
+ */
+unsigned int frame_length(const uint8_t *p, unsigned int avail)
+{
+    if (avail < 14)
+        return 0;
+    const uint16_t ethertype = get16(p + 12);
+    if (ethertype == ETH_ARP)
+        return 14 + 28;
+    if (ethertype == ETH_IP || ethertype == 0x86DD) {
+        if (avail < 20)
+            return 0;
+        const unsigned int len = (ethertype == ETH_IP)
+            ? get16(p + 16) : 40 + get16(p + 18);
+        if (len < 20 || len > 1500)
+            return LENGTH_UNKNOWN;
+        return 14 + len;
+    }
+    return LENGTH_UNKNOWN;
 }
 
 /*
- * Read and handle one frame, waiting up to timeout_ms for it. Returns whether
- * a frame arrived.
+ * Cut the bytes received so far into frames and handle them. Where frames
+ * begin and end is taken from the frames themselves, not from where USB
+ * transfers end: on macOS a short packet has been seen not to end a read,
+ * which then returns part of a frame, or several, at its timeout.
+ * `ended` says the last transfer ended normally, the way a frame boundary
+ * should end it. Returns whether any frame was handled.
+ */
+bool drain(bool ended)
+{
+    std::vector<uint8_t> &rx = link.rx_partial;
+    bool handled = false;
+    size_t at = 0;
+    while (at < rx.size()) {
+        const unsigned int avail = rx.size() - at;
+        uint8_t *p = &rx[at];
+        unsigned int len = frame_length(p, avail);
+        if (len == LENGTH_UNKNOWN) {
+            // Nothing to measure it by: only a transfer that ended can say
+            // where it stops, and then it is all of it (CRC, perhaps a pad).
+            if (ended && avail >= 18) {
+                unsigned int n = avail - 4;
+                if (crc32(p, n) != trailer(p + n) && avail >= 19)
+                    n = avail - 5;
+                if (crc32(p, n) == trailer(p + n)) {
+                    dispatch(p, n);
+                    handled = true;
+                }
+            }
+            at = rx.size();
+            break;
+        }
+        if (len == 0 || avail < len + 4)
+            break;                // the rest is still to come
+        if (crc32(p, len) != trailer(p + len)) {
+            // A sender may pad a short frame to Ethernet's minimum of 60.
+            if (len < 60 && avail >= 64 && crc32(p, 60) == trailer(p + 60)) {
+                len = 60;
+            } else {
+                debug("dropping %u bytes that do not end in a good CRC", avail);
+                at = rx.size();
+                break;
+            }
+        }
+        dispatch(p, len);
+        handled = true;
+        at += len + 4;
+        // A frame ending on a packet boundary may be followed by a pad byte
+        // (as this side sends them); a frame never starts with 0x00 here.
+        if ((len + 4) % 64 == 0 && at < rx.size() && rx[at] == 0)
+            at++;
+    }
+    rx.erase(rx.begin(), rx.begin() + at);
+    if (ended && !rx.empty() && frame_length(&rx[0], rx.size()) == 0)
+        rx.clear();               // a transfer ended inside a header: junk
+    return handled;
+}
+
+/*
+ * Read from the remote for up to timeout_ms and handle whatever frames that
+ * completes. Returns whether a frame was handled.
  */
 bool read_frames(unsigned int timeout_ms)
 {
     if (link.gone)
         return false;
-    uint8_t frame[MAX_FRAME];
+    uint8_t buffer[MAX_FRAME];
     int got = 0;
-    int err = libusb_bulk_transfer(link.dev, link.ep_in, frame, sizeof(frame),
+    int err = libusb_bulk_transfer(link.dev, link.ep_in, buffer, sizeof(buffer),
                                    &got, timeout_ms ? timeout_ms : 1);
-    if (err == LIBUSB_ERROR_TIMEOUT && got == 0)
-        return false;
-    if (err == LIBUSB_ERROR_NO_DEVICE || err == LIBUSB_ERROR_IO
-        || err == LIBUSB_ERROR_PIPE) {
+    if (got > 0)
+        link.rx_partial.insert(link.rx_partial.end(), buffer, buffer + got);
+    if (err && err != LIBUSB_ERROR_TIMEOUT) {
         debug("the remote went away: %s", libusb_error_name(err));
         link.gone = true;
+        link.rx_partial.clear();
         return false;
     }
-    if (got > 0)
-        handle_frame(frame, got);
-    return got > 0;
+    return got > 0 && drain(err == 0);
 }
 
 /* Keep the connections moving: retransmit what has gone unacknowledged. */
@@ -718,6 +798,7 @@ int UsbNetLink_Open(unsigned int timeout_ms)
         UsbNetLink_Close();
         return err;
     }
+    link.rx_partial.clear();
     debug("claimed the usbnet remote, waiting for it to take its address");
 
     // It either asks for an address (DHCP) or already has one, in which case
@@ -760,6 +841,7 @@ void UsbNetLink_Close(void)
         link.conn[i].state = TCP_CLOSED;
         std::vector<uint8_t>().swap(link.conn[i].unacked);
         std::vector<uint8_t>().swap(link.conn[i].received);
+        link.conn[i].pushes.clear();
     }
 }
 
@@ -787,6 +869,7 @@ int UsbNetLink_Connect(uint16_t port, unsigned int timeout_ms)
     c.mss = 536;
     c.unacked.clear();
     c.received.clear();
+    c.pushes.clear();
     c.rto = RTO_MIN_MS;
     c.retransmits = 0;
     send_segment(c, c.snd_una, TCP_SYN, NULL, 0);
@@ -836,23 +919,31 @@ int UsbNetLink_Recv(int conn, uint8_t *data, unsigned int &len,
         return LC_ERROR;
     Connection &c = link.conn[conn];
     const unsigned long deadline = now_ms() + timeout_ms;
-    while (c.received.empty() && c.state == TCP_OPEN && !link.gone
+    // Wait for a whole push: handing over part of one would be read as a
+    // whole reply. Only when the time is up is an unmarked rest returned.
+    while (c.pushes.empty() && c.state == TCP_OPEN && !link.gone
            && now_ms() < deadline) {
         pump(POLL_MS);
     }
-    // Collect whatever else of this reply is already queued, stopping as soon
-    // as the link goes quiet.
-    while (!c.received.empty() && c.state == TCP_OPEN && pump(1)) {
-    }
+    if (c.pushes.empty() && !c.received.empty())
+        debug("no end of message marked; returning %u bytes",
+              (unsigned int)c.received.size());
     if (c.received.empty()) {
         if (c.state == TCP_PEER_CLOSED)
             return 0;             // orderly end of stream
         return LC_ERROR_OS_NET;
     }
-    const unsigned int was_full = c.received.size() >= RX_WINDOW;
-    len = c.received.size() < capacity ? c.received.size() : capacity;
+    const size_t message = c.pushes.empty() ? c.received.size() : c.pushes[0];
+    const bool was_full = c.received.size() >= RX_WINDOW;
+    len = message < capacity ? message : capacity;
     memcpy(data, &c.received[0], len);
     c.received.erase(c.received.begin(), c.received.begin() + len);
+    std::vector<size_t> rest;
+    for (size_t i = 0; i < c.pushes.size(); i++) {
+        if (c.pushes[i] > len)
+            rest.push_back(c.pushes[i] - len);
+    }
+    c.pushes.swap(rest);
     if (was_full)
         send_ack(c);              // tell it the window is open again
     return 0;
@@ -866,9 +957,13 @@ void UsbNetLink_Disconnect(int conn)
     if ((c.state == TCP_OPEN || c.state == TCP_PEER_CLOSED) && !link.gone) {
         send_segment(c, c.snd_nxt, TCP_FIN | TCP_ACK, NULL, 0);
         c.snd_nxt += 1;
-        const unsigned long deadline = now_ms() + 500;
-        while (now_ms() < deadline && c.state != TCP_CLOSED
-               && seq_lt(c.snd_una, c.snd_nxt) && !link.gone) {
+        // Close both ways: wait for our FIN to be acknowledged and for the
+        // remote's own FIN, which handle_tcp acknowledges. A remote left
+        // waiting on that acknowledgement does not accept the next
+        // connection.
+        const unsigned long deadline = now_ms() + 2000;
+        while (now_ms() < deadline && c.state != TCP_CLOSED && !link.gone
+               && (seq_lt(c.snd_una, c.snd_nxt) || c.state != TCP_PEER_CLOSED)) {
             pump(POLL_MS);
         }
     }
@@ -876,4 +971,5 @@ void UsbNetLink_Disconnect(int conn)
     c.state = TCP_CLOSED;
     c.unacked.clear();
     c.received.clear();
+    c.pushes.clear();
 }

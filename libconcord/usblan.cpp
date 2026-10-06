@@ -104,7 +104,7 @@ int ShutdownUsbLan(void)
 #ifdef HAVE_USBNET_LINK
 /* How long a remote that has just been plugged in or reset may take. */
 static const unsigned int link_open_timeout_ms = 15000;
-static const unsigned int link_connect_timeout_ms = 5000;
+static const unsigned int link_connect_timeout_ms = 10000;
 static const unsigned int link_recv_timeout_ms = 30000;
 
 static int FindUsbLanRemoteOverUsb(void)
@@ -202,6 +202,19 @@ static int FindUsbLanRemoteOverSocket(void)
         return LC_ERROR_OS_NET;
     }
 
+    // Writable also means a connection that failed: ask which it was.
+    int so_error = 0;
+#ifdef _WIN32
+    int so_len = sizeof(so_error);
+#else
+    socklen_t so_len = sizeof(so_error);
+#endif
+    if (getsockopt(sock, SOL_SOCKET, SO_ERROR, (char *)&so_error, &so_len)
+        || so_error) {
+        debug("connect() failed: %s", strerror(so_error));
+        return LC_ERROR_OS_NET;
+    }
+
     // Change the socket back to blocking which should be fine now that we
     // connected.
 #ifdef _WIN32
@@ -295,7 +308,10 @@ static int HttpBody(char *response, char **data)
 static int GetXMLUserRFSettingOverUsb(char **data)
 {
     char buf[4096];
-    int conn = UsbNetLink_Connect(80, link_connect_timeout_ms);
+    // The remote's web server can be slow to answer while the remote is
+    // still busy after a reset; the socket path waits as long as connect()
+    // does, so this waits as long as a read.
+    int conn = UsbNetLink_Connect(80, link_recv_timeout_ms);
     if (conn < 0)
         return -conn;
     debug("Connected to the remote's web server over USB!");
