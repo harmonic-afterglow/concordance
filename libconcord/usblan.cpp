@@ -44,6 +44,20 @@
 #include "libconcord.h"
 #include "lc_internal.h"
 
+#ifdef HAVE_USBNET_LINK
+#include "usbnet_link.h"
+#endif
+
+/*
+ * Two ways to reach a usbnet remote. The direct USB link (usbnet_link.cpp)
+ * needs no OS driver and is tried first; the socket path relies on an OS
+ * network interface to the remote (Logitech's driver on Windows, or zaurus
+ * and a DHCP server on Linux) and is used when the link cannot claim it.
+ */
+enum UsbLanTransport { TRANSPORT_NONE, TRANSPORT_SOCKET, TRANSPORT_LINK };
+static UsbLanTransport transport = TRANSPORT_NONE;
+static int link_conn = -1;
+
 static SOCKET sock = INVALID_SOCKET;
 
 const char * const remote_ip_address = "169.254.1.2";
@@ -65,9 +79,20 @@ int ShutdownUsbLan(void)
 {
     int err=0;
 
+#ifdef HAVE_USBNET_LINK
+    if (transport == TRANSPORT_LINK) {
+        UsbNetLink_Disconnect(link_conn);
+        link_conn = -1;
+        UsbNetLink_Close();
+    }
+#endif
+    transport = TRANSPORT_NONE;
+
     // Close the socket
     if (sock != INVALID_SOCKET) {
-        if ((err = closesocket(sock))) {
+        err = closesocket(sock);
+        sock = INVALID_SOCKET;
+        if (err) {
             report_net_error("closesocket()");
             return LC_ERROR_OS_NET;
         }
@@ -76,7 +101,47 @@ int ShutdownUsbLan(void)
     return 0;
 }
 
+#ifdef HAVE_USBNET_LINK
+/* How long a remote that has just been plugged in or reset may take. */
+static const unsigned int link_open_timeout_ms = 15000;
+static const unsigned int link_connect_timeout_ms = 5000;
+static const unsigned int link_recv_timeout_ms = 30000;
+
+static int FindUsbLanRemoteOverUsb(void)
+{
+    int err = UsbNetLink_Open(link_open_timeout_ms);
+    if (err)
+        return err;
+    link_conn = UsbNetLink_Connect(remote_port, link_connect_timeout_ms);
+    if (link_conn < 0) {
+        err = -link_conn;
+        link_conn = -1;
+        UsbNetLink_Close();
+        return err;
+    }
+    debug("Connected to the remote over USB!");
+    return 0;
+}
+#endif
+
+static int FindUsbLanRemoteOverSocket(void);
+
 int FindUsbLanRemote(void)
+{
+    ShutdownUsbLan();
+#ifdef HAVE_USBNET_LINK
+    if (FindUsbLanRemoteOverUsb() == 0) {
+        transport = TRANSPORT_LINK;
+        return 0;
+    }
+#endif
+    int err = FindUsbLanRemoteOverSocket();
+    if (err == 0)
+        transport = TRANSPORT_SOCKET;
+    return err;
+}
+
+static int FindUsbLanRemoteOverSocket(void)
 {
     int err;
 
@@ -163,6 +228,15 @@ int FindUsbLanRemote(void)
 
 int UsbLan_Write(unsigned int len, uint8_t *data)
 {
+#ifdef HAVE_USBNET_LINK
+    if (transport == TRANSPORT_LINK) {
+        int err = UsbNetLink_Send(link_conn, data, len);
+        if (err)
+            return err;
+        debug("%i bytes sent", len);
+        return 0;
+    }
+#endif
     int err = send(sock, reinterpret_cast<char*>(data), len, 0);
 
     if (err == SOCKET_ERROR) {
@@ -178,6 +252,17 @@ int UsbLan_Write(unsigned int len, uint8_t *data)
 
 int UsbLan_Read(unsigned int &len, uint8_t *data)
 {
+#ifdef HAVE_USBNET_LINK
+    if (transport == TRANSPORT_LINK) {
+        int err = UsbNetLink_Recv(link_conn, data, len, link_recv_timeout_ms);
+        if (err) {
+            len = 0;
+            return err;
+        }
+        debug("%i bytes received", len);
+        return 0;
+    }
+#endif
     int err = recv(sock, reinterpret_cast<char*>(data), len, 0);
 
     if (err == SOCKET_ERROR) {
@@ -192,11 +277,58 @@ int UsbLan_Read(unsigned int &len, uint8_t *data)
     return 0;
 }
 
+/* The body of an HTTP response, as a new string. */
+static int HttpBody(char *response, char **data)
+{
+    char *body = strstr(response, "\r\n\r\n"); // end of the http header
+    if (body == NULL) {
+        report_net_error("strstr()");
+        return LC_ERROR_OS_NET;
+    }
+    body += 4;
+    *data = new char[strlen(body)+1];
+    strncpy(*data, body, strlen(body)+1);
+    return 0;
+}
+
+#ifdef HAVE_USBNET_LINK
+static int GetXMLUserRFSettingOverUsb(char **data)
+{
+    char buf[4096];
+    int conn = UsbNetLink_Connect(80, link_connect_timeout_ms);
+    if (conn < 0)
+        return -conn;
+    debug("Connected to the remote's web server over USB!");
+
+    int err = UsbNetLink_Send(conn, reinterpret_cast<const uint8_t*>(
+        http_get_cmd), strlen(http_get_cmd));
+    unsigned int len = 0;
+    while (!err && len < sizeof(buf) - 1) {
+        unsigned int got = sizeof(buf) - 1 - len;
+        err = UsbNetLink_Recv(conn, reinterpret_cast<uint8_t*>(buf + len),
+                              got, link_recv_timeout_ms);
+        if (err || got == 0)      // 0: the server closed the connection
+            break;
+        len += got;
+    }
+    UsbNetLink_Disconnect(conn);
+    if (err)
+        return err;
+    buf[len] = '\0';
+    return HttpBody(buf, data);
+}
+#endif
+
 int GetXMLUserRFSetting(char **data)
 {
     int err;
     int web_sock;
     char buf[4096];
+
+#ifdef HAVE_USBNET_LINK
+    if (transport == TRANSPORT_LINK)
+        return GetXMLUserRFSettingOverUsb(data);
+#endif
 
     hostent* addr = gethostbyname(remote_ip_address);
 
@@ -214,6 +346,7 @@ int GetXMLUserRFSetting(char **data)
 
     if ((err = connect(web_sock,(struct sockaddr*)&sa,sizeof(sa)))) {
         report_net_error("connect()");
+        closesocket(web_sock);
         return LC_ERROR_OS_NET;
     }
     debug("Connected to USB LAN web server!");
@@ -221,6 +354,7 @@ int GetXMLUserRFSetting(char **data)
     err = send(web_sock, http_get_cmd, strlen(http_get_cmd), 0);
     if (err == SOCKET_ERROR) {
         report_net_error("send()");
+        closesocket(web_sock);
         return LC_ERROR_OS_NET;
     }
     debug("%i bytes sent", err);
@@ -228,26 +362,19 @@ int GetXMLUserRFSetting(char **data)
     unsigned int len = 0;
     char* buf_ptr = buf;
     do {
-        err = recv(web_sock, buf_ptr, sizeof(buf)-len, 0);
+        // One byte is kept for the terminator.
+        err = recv(web_sock, buf_ptr, sizeof(buf)-1-len, 0);
         if (err == SOCKET_ERROR) {
             report_net_error("recv()");
-            len = 0;
+            closesocket(web_sock);
             return LC_ERROR_OS_NET;
         }
         len += err;
         buf_ptr += err;
         debug("%i bytes received", err);
-    } while (err > 0); // recv will return 0 when the message is done.
+    } while (err > 0 && len < sizeof(buf)-1); // recv returns 0 at the end
+    closesocket(web_sock);
     buf[len] = '\0';
 
-    buf_ptr = strstr(buf, "\r\n\r\n"); // search for end of the http header
-    if (buf_ptr == NULL) {
-        report_net_error("strstr()");
-        return LC_ERROR_OS_NET;
-    }
-    buf_ptr += 4;
-    *data = new char[strlen(buf_ptr)+1];
-    strncpy(*data, buf_ptr, strlen(buf_ptr)+1);
-
-    return 0;
+    return HttpBody(buf, data);
 }

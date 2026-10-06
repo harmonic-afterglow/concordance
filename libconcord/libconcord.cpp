@@ -763,6 +763,7 @@ int init_concord()
 int deinit_concord()
 {
     ShutdownUSB();
+    ShutdownUsbLan();
     if (rmt) {
         delete rmt;
         rmt = NULL;

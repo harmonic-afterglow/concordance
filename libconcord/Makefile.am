@@ -8,10 +8,14 @@ libconcord_la_SOURCES = remote.cpp remote_z.cpp libconcord.cpp binaryfile.cpp \
 	operationfile.cpp remote_mh.cpp libusbhid.cpp libhidapi.cpp \
 	remote_z_learn/data.cpp remote_z_learn/base.cpp \
 	remote_z_learn/single.cpp remote_z_learn/stream.cpp
+if HAVE_USBNET_LINK
+libconcord_la_SOURCES += usbnet_link.cpp usbnet_link.h
+endif
 include_HEADERS = libconcord.h
 libconcord_la_CPPFLAGS = -Wall
 libconcord_la_LDFLAGS = -version-info 6:0:0 $(LIBCONCORD_LDFLAGS) -lzip -lcurl
-libconcord_la_CXXFLAGS = $(ZIP_CFLAGS)
+libconcord_la_LIBADD = $(LIBUSB_LIBS)
+libconcord_la_CXXFLAGS = $(ZIP_CFLAGS) $(LIBUSB_CFLAGS)
 UDEVROOT ?= /
 UDEVLIBDIR ?= $(UDEVROOT)/lib
 

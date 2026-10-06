@@ -84,12 +84,33 @@ then
   fi
   AC_MSG_ERROR([$errorstr])
 fi
+#
+# The usbnet remotes (900/1000/1100) can be reached over USB directly with
+# libusb-1.0, without an OS network driver. Built when libusb-1.0 is there.
+#
+AC_ARG_WITH(
+  usbnet-link,
+  AS_HELP_STRING([--without-usbnet-link],
+                 [Reach usbnet remotes only through an OS network driver]),
+  [with_usbnet_link=$withval],
+  [with_usbnet_link=auto])
+have_usbnet_link=no
+if test "x$with_usbnet_link" != "xno"; then
+  PKG_CHECK_MODULES([LIBUSB], [libusb-1.0],
+    [have_usbnet_link=yes
+     AC_DEFINE([HAVE_USBNET_LINK], [1], [Reach usbnet remotes over libusb])],
+    [if test "x$with_usbnet_link" = "xyes"; then
+       AC_MSG_ERROR([--with-usbnet-link needs libusb-1.0])
+     fi])
+fi
+AM_CONDITIONAL([HAVE_USBNET_LINK], [test "x$have_usbnet_link" = "xyes"])
 PKG_CHECK_MODULES([ZIP], [libzip])
 PKG_CHECK_MODULES([CURL], [libcurl])
 AC_CONFIG_FILES([
     Makefile
 ])
 AC_OUTPUT
+AC_MSG_NOTICE([usbnet remotes over USB (libusb-1.0): $have_usbnet_link])
 if test "$force_libusb_on_linux" = "yes"; then
   AC_MSG_WARN(
     [
