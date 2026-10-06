@@ -7,7 +7,10 @@ libconcord_la_SOURCES = remote.cpp remote_z.cpp libconcord.cpp binaryfile.cpp \
 	remote_info.h web.h protocol.h remote.h usblan.h xml_headers.h \
 	operationfile.cpp remote_mh.cpp libusbhid.cpp libhidapi.cpp \
 	remote_z_learn/data.cpp remote_z_learn/base.cpp \
-	remote_z_learn/single.cpp remote_z_learn/stream.cpp
+	remote_z_learn/single.cpp remote_z_learn/stream.cpp \
+	lc_internal.h operationfile.h remote_z_learn/base.h \
+	remote_z_learn/binary.h remote_z_learn/data.h remote_z_learn/single.h \
+	remote_z_learn/start.h remote_z_learn/stop.h remote_z_learn/stream.h
 if HAVE_USBNET_LINK
 libconcord_la_SOURCES += usbnet_link.cpp usbnet_link.h
 endif
