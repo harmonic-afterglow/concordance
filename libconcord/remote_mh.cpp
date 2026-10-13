@@ -847,7 +847,7 @@ int CRemoteMH::UpdateConfig(const uint32_t len, const uint8_t *wr,
           0x04, static_cast<uint8_t>(len >> 24),
           static_cast<uint8_t>(len >> 16), static_cast<uint8_t>(len >> 8),
           static_cast<uint8_t>(len) };
-    const uint8_t msg_three[MH_MAX_PACKET_SIZE] =
+    uint8_t msg_three[MH_MAX_PACKET_SIZE] =
         { 0xFF, 0x03, 0x03, 0x02, 0x01, 0x05, 0x01, 0x33 };
     uint8_t rsp[MH_MAX_PACKET_SIZE];
 
@@ -879,6 +879,20 @@ int CRemoteMH::UpdateConfig(const uint32_t len, const uint8_t *wr,
     debug("msg_two");
     debug_print_packet(rsp);
 
+    /*
+     * The open's answer starts with the handle of the opened file, which every
+     * later packet of the write names: 0x05 on the remotes this was written
+     * for, 0x06 on the Harmony 800 ("ff 01 81 02 01 06 04 00 39 00 00", its
+     * file table's /cfg/usercfg). With the wrong one the 800 checks no file at
+     * the end and answers 'u' (unmatched) instead of 'm'.
+     */
+    uint8_t handle = 0x05;
+    if (rsp[1] == 0x01 && rsp[3] >= 1 && rsp[4] == 0x01) {
+        handle = rsp[5];
+    }
+    debug("file handle 0x%02x", handle);
+    msg_three[5] = handle;
+
     cb(LC_CB_STAGE_INITIALIZE_UPDATE, cb_count++, 2, 3,
         LC_CB_COUNTER_TYPE_STEPS, cb_arg, NULL);
 
@@ -908,7 +922,7 @@ int CRemoteMH::UpdateConfig(const uint32_t len, const uint8_t *wr,
         pkts_to_send++;
     pkts_to_send++; // include file completion packet, 0x7E, in count.
     uint8_t ack_rsp[MH_MAX_PACKET_SIZE] =
-        { 0xFF, 0x03, 0x00, 0x02, 0x01, 0x05, 0x01, 0x33 };
+        { 0xFF, 0x03, 0x00, 0x02, 0x01, handle, 0x01, 0x33 };
     while (tlen) {
         pkt_len = MH_MAX_DATA_SIZE;
         if (tlen < pkt_len) {
@@ -984,7 +998,7 @@ int CRemoteMH::UpdateConfig(const uint32_t len, const uint8_t *wr,
         return LC_ERROR;
     }
     const uint8_t finish_msg[MH_MAX_PACKET_SIZE] = {
-        0xFF, 0x06, get_seq(seq), 0x07, 0x01, 0x05, 0x01, 0x01, 0x80,
+        0xFF, 0x06, get_seq(seq), 0x07, 0x01, handle, 0x01, 0x01, 0x80,
         mca.type[0], mca.type[1], mca.type[2], 0x00, 0x02, mca.seed[0],
         mca.seed[1], 0x04, 0x00, 0x00, 0x00, 0x00, 0x04, mca.length[0],
         mca.length[1], mca.length[2], mca.length[3], 0x02,
@@ -1005,7 +1019,7 @@ int CRemoteMH::UpdateConfig(const uint32_t len, const uint8_t *wr,
 
     /* write msg 5 */
     const uint8_t msg_5[MH_MAX_PACKET_SIZE] =
-        { 0xFF, 0x05, get_seq(seq), 0x02, 0x01, 0x05, 0x01, 0x00 };
+        { 0xFF, 0x05, get_seq(seq), 0x02, 0x01, handle, 0x01, 0x00 };
     if ((err = HID_WriteReport(msg_5))) {
         debug("Failed to write to remote");
         return LC_ERROR_WRITE;
@@ -1020,7 +1034,7 @@ int CRemoteMH::UpdateConfig(const uint32_t len, const uint8_t *wr,
     cb(LC_CB_STAGE_FINALIZE_UPDATE, cb_count++, 3, 4,
        LC_CB_COUNTER_TYPE_STEPS, cb_arg, NULL);
 
-    if ((err = reset_sequence(get_seq(seq), 0x05)))
+    if ((err = reset_sequence(get_seq(seq), handle)))
         return err;
 
     cb(LC_CB_STAGE_FINALIZE_UPDATE, cb_count++, 4, 4,
