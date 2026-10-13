@@ -40,6 +40,14 @@
  * commands.
 */
 #define LINK_TIMEOUT 20000
+/*
+ * The Harmony 800 answers the open of /cfg/usercfg for writing only after it
+ * has erased the flash the file will take, one block per pass of its main
+ * loop (firmware 0.7.1, FUN_08008180 / FUN_08008944): tens of seconds for a
+ * config of a megabyte or two. Wait that long for that answer, and for the
+ * two that end a write, in case finishing it takes as long.
+ */
+#define MH_ERASE_TIMEOUT 180000
 #define MH_MAX_PACKET_SIZE 64
 /* In data mode, two bytes are used for the header. */
 #define MH_MAX_DATA_SIZE 62
@@ -864,7 +872,7 @@ int CRemoteMH::UpdateConfig(const uint32_t len, const uint8_t *wr,
         debug("Failed to write to remote");
         return LC_ERROR_WRITE;
     }
-    if ((err = HID_ReadReport(rsp, MH_TIMEOUT))) {
+    if ((err = HID_ReadReport(rsp, MH_ERASE_TIMEOUT))) {
         debug("Failed to read from remote");
         return LC_ERROR_READ;
     }
@@ -959,7 +967,7 @@ int CRemoteMH::UpdateConfig(const uint32_t len, const uint8_t *wr,
         debug("Failed to write to remote");
         return LC_ERROR_WRITE;
     }
-    if ((err = HID_ReadReport(rsp, MH_TIMEOUT))) {
+    if ((err = HID_ReadReport(rsp, MH_ERASE_TIMEOUT))) {
         debug("Failed to read from remote");
         return LC_ERROR_WRITE;
     }
@@ -985,7 +993,7 @@ int CRemoteMH::UpdateConfig(const uint32_t len, const uint8_t *wr,
         debug("Failed to write to remote");
         return LC_ERROR_WRITE;
     }
-    if ((err = HID_ReadReport(rsp, MH_TIMEOUT))) {
+    if ((err = HID_ReadReport(rsp, MH_ERASE_TIMEOUT))) {
         debug("Failed to read from remote");
         return LC_ERROR_READ;
     }
