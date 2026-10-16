@@ -1209,10 +1209,15 @@ int CRemoteZ_Base::GetIdentity(TRemoteInfo &ri, THIDINFO &hid, lc_callback cb,
     ri.tid[20] = '\0';
 
     // Get the "XMLUserRFSetting" - the usbnet remote appears to have a web
-    // server running where the Windows driver grabs this data.
+    // server running where the Windows driver grabs this data. It only feeds
+    // the posts to Logitech's website, and a remote in Safe Mode runs no web
+    // server (a Harmony 900 refuses port 80 there while 3074 works), so its
+    // absence is not a reason to fail: the remote is still there to be read
+    // and written, which is how one gets out of Safe Mode.
     if ((err = GetXMLUserRFSetting(&ri.xml_user_rf_setting))) {
-        debug("Failed to read XML User RF Settings");
-        return LC_ERROR;
+        debug("No XML User RF Settings (no web server: Safe Mode?)");
+        ri.xml_user_rf_setting = new char[1];
+        ri.xml_user_rf_setting[0] = '\0';
     }
     
     return 0;

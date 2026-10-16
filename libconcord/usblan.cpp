@@ -102,8 +102,14 @@ int ShutdownUsbLan(void)
 }
 
 #ifdef HAVE_USBNET_LINK
-/* How long a remote that has just been plugged in or reset may take. */
-static const unsigned int link_open_timeout_ms = 15000;
+/*
+ * How long a remote that has just been plugged in or reset may take to ask for
+ * its address. Awake, a Harmony 900 asks every 0.3 s; in Safe Mode it backs off
+ * like any DHCP client - 4, 8, 16 then 32 s between DISCOVERs, round again,
+ * the "secs" field counting on regardless (and a USB reset does not restart
+ * it). Answered once, it keeps the address and answers at once thereafter.
+ */
+static const unsigned int link_open_timeout_ms = 40000;
 static const unsigned int link_connect_timeout_ms = 10000;
 static const unsigned int link_recv_timeout_ms = 30000;
 
