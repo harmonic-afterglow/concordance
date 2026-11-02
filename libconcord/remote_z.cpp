@@ -429,10 +429,11 @@ int CRemoteZ_USBNET::UpdateConfig(const uint32_t len, const uint8_t *wr,
 /*
  * Write a whole region: start an update of it, send its size, its data 1024
  * bytes at a time, then ask for its checksum and finish. The user config is
- * one region (4 on a 900 or 1100); the others are the firmware (a Harmony
- * 900's 1, 2, 12, 14, 16), which Logitech's software wrote with this same
- * sequence, each region file sent as it is in the firmware package. A Harmony
- * 1000 keeps its config in a filesystem region, written the same way.
+ * one region, 4, on the 900, 1000 and 1100; the others are the firmware (a
+ * Harmony 900's 1, 2, 12, 14, 16), which Logitech's software wrote with this
+ * same sequence, each region file sent as it is in the firmware package. A
+ * Harmony 1000 accepts region 4 like the others (its region manager checks
+ * only that the region is valid before an update) but will not hand it back.
  *
  * Writing a region cannot be undone from here, and a bad region 1 (Safe Mode)
  * or 2 (the program) leaves a remote that will not start. The caller chooses
@@ -952,10 +953,8 @@ int CRemoteZ_USBNET::ReadRegion(uint8_t region, uint32_t &rgn_len, uint8_t *rd,
     debug("READ_REGION");
     // 1 parameters, 1 byte, region to read.
     uint8_t cmd[60] = { 0x01, 0x01, region };
-    // A remote busy rewriting a region (its filesystems change as it runs)
-    // answers BUSY; it is asked again, for up to a minute. A Harmony 1000 keeps
-    // its config in a filesystem region, so this is the usual case there, not
-    // the rare one it is on a 900.
+    // A remote still finishing something - a region it was asked for and
+    // refused - answers BUSY; it is asked again, for up to a minute.
     for (int busy = 0; ; busy++) {
         if ((err = Write(TYPE_REQUEST, COMMAND_READ_REGION, 3, cmd))) {
             debug("Failed to write to remote");
@@ -979,8 +978,9 @@ int CRemoteZ_USBNET::ReadRegion(uint8_t region, uint32_t &rgn_len, uint8_t *rd,
     // value as STATUS_OK (1); any other status is the remote answering "no".
     if (rlen >= 3 && rsp[1] == COMMAND_READ_REGION && rsp[2] != STATUS_OK) {
         // An answer, and a no: the remote is still in step, and says why. A
-        // Harmony 1000 answers BAD_REGION (0x0B) for region 4 at once - its
-        // config is not a readable region there.
+        // Harmony 1000 answers BAD_REGION (0x0B) at once for every region but its
+        // Z-Wave ones (7 and 10): its region manager reads no others, region 4
+        // (the config) included.
         debug("region %d refused, status %02X", region, rsp[2]);
         return LC_ERROR_UNSUPP;
     }

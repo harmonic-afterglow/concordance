@@ -447,7 +447,8 @@ const char *get_region_version(int index);
  * Read one region whole. Allocates *out; free it with delete_blob().
  * LC_ERROR_UNSUPP on a remote without regions, and for a region the remote
  * will not hand over (a Harmony 900's region 12 outside Safe Mode, and its
- * region 3); the connection is still good after that.
+ * region 3; on a Harmony 1000 every region but the Z-Wave ones, 7 and 10);
+ * the connection is still good after that.
  */
 int read_region_from_remote(uint8_t region, uint8_t **out, uint32_t *size,
                             lc_callback cb, void *cb_arg);

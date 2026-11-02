@@ -1043,8 +1043,9 @@ int read_config_from_remote(uint8_t **out, uint32_t *size, lc_callback cb,
         }
         delete[] *out;
         *out = NULL;
-        // A remote that will not hand the region over (a Harmony 1000 that
-        // lists no Region 4) says the same however often it is asked.
+        // A remote that will not hand the region over (a Harmony 1000, whose
+        // firmware reads out only its Z-Wave regions) says the same however
+        // often it is asked.
         if (err == LC_ERROR_UNSUPP) {
             return err;
         }
