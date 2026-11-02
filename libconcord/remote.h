@@ -401,6 +401,8 @@ public:
     virtual ~CRemoteZ_USBNET() {};
     virtual int ReadRegion(uint8_t region, uint32_t &len, uint8_t *rd,
         lc_callback cb, void *cb_arg, uint32_t cb_stage);
+    int WriteRegion(uint8_t region, const uint32_t len, const uint8_t *wr,
+        lc_callback cb, void *cb_arg, uint32_t cb_stage);
     int UpdateConfig(const uint32_t len, const uint8_t *wr,
         lc_callback cb, void *cb_arg, uint32_t cb_stage,
         uint32_t xml_size=0, uint8_t *xml=NULL);

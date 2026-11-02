@@ -29,6 +29,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <sys/stat.h>
 #include <zip.h>
 #include <list>
 #include <unistd.h>
@@ -1503,6 +1504,130 @@ int read_firmware_from_remote(uint8_t **out, uint32_t *size, lc_callback cb,
     return _read_fw_from_remote(*out, *size, ri.arch->firmware_base, cb,
         cb_arg, LC_CB_STAGE_READ_FIRMWARE);
 }
+
+/*
+ * REGIONS - read or write one whole region on a usbnet remote (900, 1000,
+ * 1100), and read a firmware package's files. See libconcord.h.
+ */
+/* More than any region has: a Harmony 900's largest, Region 12, is 7 MB. */
+static const uint32_t REGION_READ_ROOM = 32 * 1024 * 1024;
+
+int get_region_count()
+{
+    return is_usbnet_remote() ? ri.num_regions : 0;
+}
+
+int get_region_id(int index)
+{
+    if (!is_usbnet_remote() || index < 0 || index >= ri.num_regions)
+        return -1;
+    return ri.region_ids[index];
+}
+
+const char *get_region_version(int index)
+{
+    if (!is_usbnet_remote() || index < 0 || index >= ri.num_regions)
+        return NULL;
+    return ri.region_versions[index];
+}
+
+int read_region_from_remote(uint8_t region, uint8_t **out, uint32_t *size,
+                            lc_callback cb, void *cb_arg)
+{
+    if (!is_usbnet_remote())
+        return LC_ERROR_UNSUPP;
+    // Read once into room for any region: the remote says how big it is as
+    // the read starts. Measuring first is not cheaper - it reads the whole
+    // region too - and a second read of a large one timed out on a Harmony
+    // 900, leaving a late answer that every request after it then took.
+    const uint32_t room = REGION_READ_ROOM;
+    uint8_t *buf = new uint8_t[room];
+    uint32_t got = room;
+    int err = ((CRemoteZ_USBNET*)rmt)->ReadRegion(region, got, buf, cb, cb_arg,
+                                                  LC_CB_STAGE_READ_FIRMWARE);
+    if (err) {
+        delete[] buf;
+        // a region the remote refuses is UNSUPP; anything else, a read error
+        return err == LC_ERROR_UNSUPP ? err : LC_ERROR_READ;
+    }
+    *out = new uint8_t[got ? got : 1];
+    memcpy(*out, buf, got);
+    delete[] buf;
+    *size = got;
+    return 0;
+}
+
+int write_region_to_remote(uint8_t region, const uint8_t *in, uint32_t size,
+                           lc_callback cb, void *cb_arg)
+{
+    if (!is_usbnet_remote())
+        return LC_ERROR_UNSUPP;
+    if (!size)
+        return LC_ERROR_INVALID_CONFIG;
+    // Only a region the remote says it has.
+    bool known = false;
+    for (int i = 0; i < ri.num_regions; i++)
+        known = known || ri.region_ids[i] == region;
+    if (!known)
+        return LC_ERROR_UNSUPP;
+    if (((CRemoteZ_USBNET*)rmt)->WriteRegion(region, size, in, cb, cb_arg,
+                                             LC_CB_STAGE_WRITE_FIRMWARE))
+        return LC_ERROR_WRITE;
+    return 0;
+}
+
+int read_package_member(const char *package, const char *member,
+                        uint8_t **out, uint32_t *size)
+{
+    // A firmware package as Logitech shipped it (a .hfw: a zip of
+    // Region_<n>.EzHex and Data.xml), or the same files in a directory.
+    struct stat st;
+    if (stat(package, &st))
+        return LC_ERROR_OS_FILE;
+    if (S_ISDIR(st.st_mode)) {
+        std::string path = std::string(package) + "/" + member;
+        FILE *fp = fopen(path.c_str(), "rb");
+        if (!fp)
+            return LC_ERROR_OS_FILE;
+        fseek(fp, 0, SEEK_END);
+        long n = ftell(fp);
+        fseek(fp, 0, SEEK_SET);
+        *out = new uint8_t[n > 0 ? n : 1];
+        *size = fread(*out, 1, n, fp);
+        fclose(fp);
+        if ((long)*size != n) {
+            delete[] *out;
+            *out = NULL;
+            return LC_ERROR_OS_FILE;
+        }
+        return 0;
+    }
+    struct zip *zip = zip_open(package, 0, NULL);
+    if (!zip)
+        return LC_ERROR_OS_FILE;
+    struct zip_stat zst;
+    if (zip_stat(zip, member, 0, &zst)) {
+        zip_close(zip);
+        return LC_ERROR_OS_FILE;
+    }
+    struct zip_file *zf = zip_fopen(zip, member, 0);
+    if (!zf) {
+        zip_close(zip);
+        return LC_ERROR_OS_FILE;
+    }
+    *out = new uint8_t[zst.size ? zst.size : 1];
+    zip_int64_t got = zip_fread(zf, *out, zst.size);
+    zip_fclose(zf);
+    zip_close(zip);
+    if (got < 0 || (zip_uint64_t)got != zst.size) {
+        delete[] *out;
+        *out = NULL;
+        return LC_ERROR_OS_FILE;
+    }
+    *size = zst.size;
+    return 0;
+}
+
 
 int _write_firmware_to_remote(int direct, lc_callback cb, void *cb_arg,
                               uint32_t cb_stage)

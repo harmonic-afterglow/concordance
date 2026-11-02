@@ -20,6 +20,9 @@
  */
 
 #include <string.h>
+#ifndef _WIN32
+#include <unistd.h>                 // sleep(), for the READ_REGION busy wait
+#endif
 #include "libconcord.h"
 #include "lc_internal.h"
 #include "hid.h"
@@ -419,6 +422,26 @@ int CRemoteZ_USBNET::UpdateConfig(const uint32_t len, const uint8_t *wr,
                                   uint32_t cb_stage, uint32_t xml_size,
                                   uint8_t *xml)
 {
+    return WriteRegion(REGION_USER_CONFIG, len, wr, cb, cb_arg,
+                       LC_CB_STAGE_WRITE_CONFIG);
+}
+
+/*
+ * Write a whole region: start an update of it, send its size, its data 1024
+ * bytes at a time, then ask for its checksum and finish. The user config is
+ * one region (4 on a 900 or 1100); the others are the firmware (a Harmony
+ * 900's 1, 2, 12, 14, 16), which Logitech's software wrote with this same
+ * sequence, each region file sent as it is in the firmware package. A Harmony
+ * 1000 keeps its config in a filesystem region, written the same way.
+ *
+ * Writing a region cannot be undone from here, and a bad region 1 (Safe Mode)
+ * or 2 (the program) leaves a remote that will not start. The caller chooses
+ * the region; nothing here writes more than the one it is given.
+ */
+int CRemoteZ_USBNET::WriteRegion(uint8_t region, const uint32_t len,
+                                 const uint8_t *wr, lc_callback cb,
+                                 void *cb_arg, uint32_t cb_stage)
+{
     int err = 0;
     int cb_count = 0;
 
@@ -429,7 +452,7 @@ int CRemoteZ_USBNET::UpdateConfig(const uint32_t len, const uint8_t *wr,
     debug("START_UPDATE");
     // 2 parameters, each 1 byte.
     // 1st parameter "flags" seems to always be 0.
-    uint8_t cmd[60] = { 0x02, 0x01, 0x00, 0x01, REGION_USER_CONFIG };
+    uint8_t cmd[60] = { 0x02, 0x01, 0x00, 0x01, region };
     if ((err = TCPSendAndCheck(COMMAND_START_UPDATE, 5, cmd))) {
         return err;
     }
@@ -446,7 +469,7 @@ int CRemoteZ_USBNET::UpdateConfig(const uint32_t len, const uint8_t *wr,
     cmd[4] = (len & 0x0000FF00) >> 8;
     cmd[5] = (len & 0x000000FF);
     cmd[6] = 0x01; // 2nd parameter 1 byte (region id)
-    cmd[7] = REGION_USER_CONFIG;
+    cmd[7] = region;
     if ((err = TCPSendAndCheck(COMMAND_WRITE_UPDATE_HEADER, 8, cmd))) {
         return err;
     }
@@ -463,7 +486,7 @@ int CRemoteZ_USBNET::UpdateConfig(const uint32_t len, const uint8_t *wr,
     uint8_t tmp_pkt[1033];
     tmp_pkt[0] = 0x03; // 3 parameters
     tmp_pkt[1] = 0x01; // 1st parameter, 1 byte (region id)
-    tmp_pkt[2] = REGION_USER_CONFIG;
+    tmp_pkt[2] = region;
     tmp_pkt[3] = 0xC2; // 2nd parameter, 1024 bytes (data)
     tmp_pkt[1028] = 0x04; // 3rd parameter, 4 bytes (length)
     while (tlen) {
@@ -488,7 +511,7 @@ int CRemoteZ_USBNET::UpdateConfig(const uint32_t len, const uint8_t *wr,
         wr_ptr += pkt_len;
 
         if (cb) {
-            cb(LC_CB_STAGE_WRITE_CONFIG, cb_count++, (int)(wr_ptr - wr), len,
+            cb(cb_stage, cb_count++, (int)(wr_ptr - wr), len,
                LC_CB_COUNTER_TYPE_BYTES, cb_arg, NULL);
         }
     }
@@ -501,7 +524,7 @@ int CRemoteZ_USBNET::UpdateConfig(const uint32_t len, const uint8_t *wr,
     debug("UPDATE_DATA_DONE");
     cmd[0] = 0x01; // 1 parameter
     cmd[1] = 0x01; // 1st parameter 1 byte (region id)
-    cmd[2] = REGION_USER_CONFIG;
+    cmd[2] = region;
     if ((err = TCPSendAndCheck(COMMAND_WRITE_UPDATE_DATA_DONE, 3, cmd))) {
         return err;
     }
@@ -516,7 +539,7 @@ int CRemoteZ_USBNET::UpdateConfig(const uint32_t len, const uint8_t *wr,
     cmd[2] = 0xFF; // seed seems to always be FF
     cmd[3] = 0xFF; // seed seems to always be FF
     cmd[4] = 0x01; // 2nd parameter 1 byte (region id)
-    cmd[5] = REGION_USER_CONFIG;
+    cmd[5] = region;
     if ((err = TCPSendAndCheck(COMMAND_GET_UPDATE_CHECKSUM, 6, cmd))) {
         return err;
     }
@@ -530,7 +553,7 @@ int CRemoteZ_USBNET::UpdateConfig(const uint32_t len, const uint8_t *wr,
     cmd[1] = 0x01; // 1st parameter 1 byte (validate)
     cmd[2] = 0x01; // validate?
     cmd[3] = 0x01; // 2nd parameter 1 byte (region id)
-    cmd[4] = REGION_USER_CONFIG;
+    cmd[4] = region;
     if ((err = TCPSendAndCheck(COMMAND_FINISH_UPDATE, 5, cmd))) {
         return err;
     }
@@ -929,16 +952,35 @@ int CRemoteZ_USBNET::ReadRegion(uint8_t region, uint32_t &rgn_len, uint8_t *rd,
     debug("READ_REGION");
     // 1 parameters, 1 byte, region to read.
     uint8_t cmd[60] = { 0x01, 0x01, region };
-    if ((err = Write(TYPE_REQUEST, COMMAND_READ_REGION, 3, cmd))) {
-        debug("Failed to write to remote");
-        return LC_ERROR_WRITE;
+    // A remote busy rewriting a region (its filesystems change as it runs)
+    // answers BUSY; it is asked again, for up to a minute. A Harmony 1000 keeps
+    // its config in a filesystem region, so this is the usual case there, not
+    // the rare one it is on a 900.
+    for (int busy = 0; ; busy++) {
+        if ((err = Write(TYPE_REQUEST, COMMAND_READ_REGION, 3, cmd))) {
+            debug("Failed to write to remote");
+            return LC_ERROR_WRITE;
+        }
+        if ((err = Read(status, rlen, rsp))) {
+            debug("Failed to read to remote");
+            return LC_ERROR_READ;
+        }
+        if (!(rlen >= 3 && rsp[1] == COMMAND_READ_REGION &&
+              rsp[2] == STATUS_BUSY) || busy == 20)
+            break;
+        debug("the remote is busy; asking for region %d again", region);
+#ifdef _WIN32
+        Sleep(3000);
+#else
+        sleep(3);
+#endif
     }
-    if ((err = Read(status, rlen, rsp))) {
-        debug("Failed to read to remote");
-        return LC_ERROR_READ;
-    }
+    // A READ_REGION success carries rsp[2] == TYPE_RESPONSE, which is the same
+    // value as STATUS_OK (1); any other status is the remote answering "no".
     if (rlen >= 3 && rsp[1] == COMMAND_READ_REGION && rsp[2] != STATUS_OK) {
-        // An answer, and a no: the remote is still in step, and says why.
+        // An answer, and a no: the remote is still in step, and says why. A
+        // Harmony 1000 answers BAD_REGION (0x0B) for region 4 at once - its
+        // config is not a readable region there.
         debug("region %d refused, status %02X", region, rsp[2]);
         return LC_ERROR_UNSUPP;
     }

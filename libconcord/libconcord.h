@@ -425,6 +425,49 @@ int read_firmware_from_remote(uint8_t **out, uint32_t *size, lc_callback cb,
  * Same as write_config_to_remote(), but with the firmware instead.
  */
 int write_firmware_to_remote(int direct, lc_callback cb, void *cb_arg);
+
+/*
+ * REGIONS - the usbnet remotes (Harmony 900, 1000, 1100)
+ *
+ * Their firmware is not one image but numbered regions (remote.h, TRegion) -
+ * Safe Mode, the program, file systems, the user config - each read and
+ * written whole. Some, like a Harmony 900's 3, the remote does not hand over. Logitech's
+ * firmware package (.hfw) is a zip of one Region_<n>.EzHex per region, as it
+ * is written to the remote, and a Data.xml giving each region's version and
+ * the order they are written in.
+ *
+ * get_region_count() is 0 on any other remote; get_region_id() and
+ * get_region_version() describe the remote's regions as get_identity() read
+ * them (index 0 is region 0, which the remote does not list).
+ */
+int get_region_count();
+int get_region_id(int index);
+const char *get_region_version(int index);
+/*
+ * Read one region whole. Allocates *out; free it with delete_blob().
+ * LC_ERROR_UNSUPP on a remote without regions, and for a region the remote
+ * will not hand over (a Harmony 900's region 12 outside Safe Mode, and its
+ * region 3); the connection is still good after that.
+ */
+int read_region_from_remote(uint8_t region, uint8_t **out, uint32_t *size,
+                            lc_callback cb, void *cb_arg);
+/*
+ * Write one region whole, replacing what is there. Only a region the remote
+ * lists. Region 1 is Safe Mode itself (region 2 the remote's program): one
+ * that does not work leaves a remote that does not start and no Safe Mode to
+ * recover it from. The caller decides which regions to write; nothing here
+ * writes more than the one it is given.
+ */
+int write_region_to_remote(uint8_t region, const uint8_t *in, uint32_t size,
+                           lc_callback cb, void *cb_arg);
+/*
+ * Read a member (Data.xml, Region_12.EzHex) of a firmware package: a .hfw zip
+ * or a directory holding the same files. Allocates *out; free it with
+ * delete_blob().
+ */
+int read_package_member(const char *package, const char *member,
+                        uint8_t **out, uint32_t *size);
+
 /*
  * Same as write_config_to_file(), but with firmware instead. Note
  * that unless binary is specified, the firmware is broken into chunks
