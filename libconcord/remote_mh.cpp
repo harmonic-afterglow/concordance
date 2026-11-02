@@ -258,7 +258,7 @@ int CRemoteMH::ReadFile(const char *filename, uint8_t *rd, const uint32_t rdlen,
         debug("Failed to read from remote");
         return LC_ERROR_READ;
     }
-    debug("msg_ack");
+    debug_packet("msg_ack");
     debug_print_packet(rsp);
 
     uint8_t exp_seq = rsp[2] & 0x3F;
@@ -314,7 +314,7 @@ int CRemoteMH::ReadFile(const char *filename, uint8_t *rd, const uint32_t rdlen,
                 return LC_ERROR_READ;
             }
             exp_seq = rsp[2] & 0x3F;
-            debug("ack");
+            debug_packet("ack");
             debug_print_packet(rsp);
             pkt_count = 0;
         }
@@ -389,7 +389,7 @@ int CRemoteMH::WriteFile(const char *filename, uint8_t *wr,
         debug("Failed to write to remote");
         return LC_ERROR_WRITE;
     }
-    debug("msg_ack");
+    debug_packet("msg_ack");
     /* No response expected - proceed to send data. */
 
     uint8_t *wr_ptr = const_cast<uint8_t*>(wr);
@@ -410,7 +410,7 @@ int CRemoteMH::WriteFile(const char *filename, uint8_t *wr,
         tmp_pkt[1] = pkt_len;
         memcpy(&tmp_pkt[2], wr_ptr, pkt_len);
 
-        debug("DATA sending %d bytes, %d bytes left", pkt_len, tlen);
+        debug_packet("DATA sending %d bytes, %d bytes left", pkt_len, tlen);
 
         if ((err = HID_WriteReport(tmp_pkt))) {
             return err;
@@ -520,7 +520,7 @@ int CRemoteMH::GetIdentity(TRemoteInfo &ri, THIDINFO &hid, lc_callback cb,
                         0x03, NULL, NULL, 0)))
         return err;
     string identity(buffer);
-    debug("%s", identity.c_str());
+    debug_packet("%s", identity.c_str());   // its serial number among it
 
     ri.fw_ver_major = strtol(find_value(identity, "fw_ver").c_str(), NULL, 10);
     ri.fw_ver_minor = strtol(find_value(identity, "fw_ver").c_str()+2, NULL,
@@ -934,7 +934,7 @@ int CRemoteMH::UpdateConfig(const uint32_t len, const uint8_t *wr,
         tmp_pkt[1] = pkt_len;
         memcpy(&tmp_pkt[2], wr_ptr, pkt_len);
 
-        debug("DATA %d, sending %d bytes, %d bytes left", cb_count,
+        debug_packet("DATA %d, sending %d bytes, %d bytes left", cb_count,
             pkt_len, tlen);
 
         if ((err = HID_WriteReport(tmp_pkt))) {

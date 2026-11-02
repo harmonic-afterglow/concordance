@@ -62,7 +62,7 @@ int TCP_Ack(bool increment_ack = false, bool fin = false) {
     pkt[2] = seq;
     pkt[3] = ack;
 
-    debug("Writing packet:");
+    debug_packet("Writing packet:");
 #ifdef _DEBUG
     for (int i = 0; i <= pkt[0]; i++) {
         fprintf(stderr, "%02X ", pkt[i]);
@@ -96,7 +96,7 @@ int CRemoteZ_HID::UDP_Write(uint8_t typ, uint8_t cmd, uint32_t len,
     if (data && len)
         memcpy(pkt + 4, data, len);
 
-    debug("Writing packet:");
+    debug_packet("Writing packet:");
 #ifdef _DEBUG
     for (int i = 0; i <= pkt[0]; i++) {
         fprintf(stderr, "%02X ", pkt[i]);
@@ -115,7 +115,7 @@ int CRemoteZ_HID::UDP_Read(uint8_t &status, uint32_t &len, uint8_t *data)
         return LC_ERROR_READ;
     }
 
-    debug("Reading packet:");
+    debug_packet("Reading packet:");
 #ifdef _DEBUG
     for (int i = 0; i <= pkt[0]; i++) {
         fprintf(stderr, "%02X ", pkt[i]);
@@ -175,7 +175,7 @@ int CRemoteZ_HID::TCP_Write(uint8_t typ, uint8_t cmd, uint32_t len,
     if (data && len)
         memcpy(pkt + 6, data, len);
 
-    debug("Writing packet:");
+    debug_packet("Writing packet:");
 #ifdef _DEBUG
     for (int i = 0; i <= pkt[0]; i++) {
         fprintf(stderr, "%02X ", pkt[i]);
@@ -200,7 +200,7 @@ int CRemoteZ_HID::TCP_Read(uint8_t &status, uint32_t &len, uint8_t *data)
         return LC_ERROR_READ;
     }
 
-    debug("Reading packet:");
+    debug_packet("Reading packet:");
 #ifdef _DEBUG
     for (int i = 0; i <= pkt[0]; i++) {
         fprintf(stderr, "%02X ", pkt[i]);
@@ -302,17 +302,44 @@ int CRemoteZ_USBNET::Write(uint8_t typ, uint8_t cmd, uint32_t len,
         len = 4;
     }
 
+    // Every request but the ones a transfer repeats for each block, so the
+    // trace shows which of them a remote did not answer.
+    if (cmd != COMMAND_READ_REGION_DATA && cmd != COMMAND_WRITE_UPDATE_DATA)
+        debug("request %02X, %u bytes", cmd, len);
     return UsbLan_Write(len, pkt);
 }
+
+/* What every reply buffer here holds: the largest packet and its header. */
+static const uint32_t USBNET_REPLY_ROOM = USBNET_MAX_PACKET_SIZE + 3;
 
 int CRemoteZ_USBNET::Read(uint8_t &status, uint32_t &len, uint8_t *data)
 {
     uint8_t buf[1600];
     len = sizeof(buf);
     int err;
-    if ((err = UsbLan_Read(len, buf)))
+    if ((err = UsbLan_Read(len, buf))) {
+        debug("no reply (error %d)", err);
         return err;
+    }
 
+    if (len >= 3 && buf[1] == COMMAND_GET_GUID) {
+        // The remote's serial numbers: not for a log people post.
+        debug("reply, %u bytes: %02X %02X %02X ...", len, buf[0], buf[1],
+              buf[2]);
+    } else if (len < 3 || buf[1] != COMMAND_READ_REGION_DATA) {
+        // Its start: the command it answers, its status, its parameters.
+        char hex[3 * 24 + 1] = "";
+        for (unsigned int i = 0; i < len && i < 24; i++)
+            snprintf(hex + 3 * i, 4, " %02X", buf[i]);
+        debug("reply, %u bytes:%s%s", len, hex, len > 24 ? " ..." : "");
+    }
+
+    if (len > USBNET_REPLY_ROOM) {
+        // More than any reply is: keep what fits rather than run past the
+        // caller's buffer.
+        debug("reply of %u bytes cut to %u", len, USBNET_REPLY_ROOM);
+        len = USBNET_REPLY_ROOM;
+    }
     memcpy(data, buf, len);
 
     return err;
@@ -337,6 +364,10 @@ int CRemoteZ_USBNET::ParseParams(uint32_t len, uint8_t *data, TParamList &pl)
                 break;
         }
         ++i;
+        if (n == sizeof(pl.p) / sizeof(pl.p[0])) {
+            debug("more parameters than %u; the rest ignored", n);
+            break;
+        }
         pl.p[n++] = data+i;
 #ifdef _DEBUG
         fprintf(stderr, "DEBUG (%s): %3i:", __FUNCTION__, param_len);
@@ -358,7 +389,7 @@ int CRemoteZ_USBNET::TCPSendAndCheck(uint8_t cmd, uint32_t len, uint8_t *data)
     int err = 0;
     uint8_t status;
     unsigned int rlen;
-    uint8_t rsp[60];
+    uint8_t rsp[USBNET_REPLY_ROOM];
 
     if ((err = Write(TYPE_REQUEST, cmd, len, data))) {
         debug("Failed to send request %02X", cmd);
@@ -448,7 +479,7 @@ int CRemoteZ_USBNET::UpdateConfig(const uint32_t len, const uint8_t *wr,
         tmp_pkt[1031] = (pkt_len & 0x0000FF00) >> 8;
         tmp_pkt[1032] = (pkt_len & 0x000000FF);
 
-        debug("DATA %d, sending %d bytes, %d bytes left", cb_count,
+        debug_packet("DATA %d, sending %d bytes, %d bytes left", cb_count,
             pkt_len, tlen);
 
         if ((err = TCPSendAndCheck(COMMAND_WRITE_UPDATE_DATA, 1033, tmp_pkt))) {
@@ -517,7 +548,7 @@ int CRemoteZ_USBNET::GetTime(const TRemoteInfo &ri, THarmonyTime &ht)
         debug("Failed to write to remote");
         return LC_ERROR_WRITE;
     }
-    uint8_t time[60];
+    uint8_t time[USBNET_REPLY_ROOM];
     unsigned int len;
     uint8_t status;
     if ((err = Read(status, len, time))) {
@@ -728,7 +759,7 @@ int CRemoteZ_USBNET::ReadIrData(uint32_t *freq, uint32_t **ir_signal,
             break;
         }
 
-        debug("DATA %d, read %d bytest", cb_count, len)
+        debug_packet("DATA %d, read %d bytes", cb_count, len);
 
         auto ret = single.addChunk(std::vector<uint8_t>(rsp, rsp + len),
                                    firstChunk);
@@ -824,7 +855,7 @@ int CRemoteZ_USBNET::ReadIrStream(uint32_t *freq, uint32_t **ir_signal,
             break;
         }
 
-        debug("DATA %d, read %d bytest", cb_count, len)
+        debug_packet("DATA %d, read %d bytes", cb_count, len);
 
         auto ret = stream.addChunk(std::vector<uint8_t>(rsp, rsp + len),
                                    firstChunk);
@@ -890,7 +921,7 @@ int CRemoteZ_USBNET::ReadRegion(uint8_t region, uint32_t &rgn_len, uint8_t *rd,
     const uint32_t capacity = rgn_len;
     int err = 0;
     int cb_count = 0;
-    uint8_t rsp[60];
+    uint8_t rsp[USBNET_REPLY_ROOM];
     unsigned int rlen;
     uint8_t status;
     CRemoteZ_Base::TParamList pl;
@@ -905,6 +936,11 @@ int CRemoteZ_USBNET::ReadRegion(uint8_t region, uint32_t &rgn_len, uint8_t *rd,
     if ((err = Read(status, rlen, rsp))) {
         debug("Failed to read to remote");
         return LC_ERROR_READ;
+    }
+    if (rlen >= 3 && rsp[1] == COMMAND_READ_REGION && rsp[2] != STATUS_OK) {
+        // An answer, and a no: the remote is still in step, and says why.
+        debug("region %d refused, status %02X", region, rsp[2]);
+        return LC_ERROR_UNSUPP;
     }
     if (rsp[2] != TYPE_RESPONSE || rsp[1] != COMMAND_READ_REGION || rlen != 9 ||
         rsp[4] != 0x04) {
@@ -963,7 +999,7 @@ int CRemoteZ_USBNET::ReadRegion(uint8_t region, uint32_t &rgn_len, uint8_t *rd,
             rd_ptr += pkt_len;
         }
 
-        debug("DATA %d, read %d bytes, %d bytes left", cb_count, pkt_len,
+        debug_packet("DATA %d, read %d bytes, %d bytes left", cb_count, pkt_len,
               data_to_read);
 
         if (cb) {
@@ -999,7 +1035,7 @@ int CRemoteZ_Base::Reset(uint8_t kind)
         debug("Failed to write to remote");
         return LC_ERROR_WRITE;
     }
-    uint8_t rsp[60];
+    uint8_t rsp[USBNET_REPLY_ROOM];
     unsigned int len;
     uint8_t status;
     if ((err = Read(status, len, rsp))) {
@@ -1030,7 +1066,7 @@ int CRemoteZ_Base::GetIdentity(TRemoteInfo &ri, THIDINFO &hid, lc_callback cb,
         debug("Failed to write to remote");
         return LC_ERROR_WRITE;
     }
-    uint8_t rsp[60];
+    uint8_t rsp[USBNET_REPLY_ROOM];
     unsigned int len;
     uint8_t status;
     if ((err = Read(status, len, rsp))) {
@@ -1044,6 +1080,10 @@ int CRemoteZ_Base::GetIdentity(TRemoteInfo &ri, THIDINFO &hid, lc_callback cb,
 
     CRemoteZ_Base::TParamList pl;
     ParseParams(len, rsp, pl);
+    if (pl.count < 8) {
+        debug("system info with %u parameters, not 8", pl.count);
+        return LC_ERROR_INVALID_DATA_FROM_REMOTE;
+    }
 
     ri.flash_mfg = 0x01;
     ri.flash_id = 0x49;
@@ -1088,39 +1128,78 @@ int CRemoteZ_Base::GetIdentity(TRemoteInfo &ri, THIDINFO &hid, lc_callback cb,
     }
 
     ParseParams(len, rsp, pl);
+    if (pl.count < 1) {
+        debug("no serial number in the reply");
+        return LC_ERROR_INVALID_DATA_FROM_REMOTE;
+    }
 
     make_serial(pl.p[0], ri);
 
-    if (IsUSBNet()) {
-        // Get the User Config Region to find the config bytes used.
-        if ((err = ReadRegion(REGION_USER_CONFIG, ri.config_bytes_used, NULL,
-                              NULL, NULL, 0))) {
-            return err;
-        }
-    } else {
-        ri.config_bytes_used = 0;
-    }
     ri.max_config_size = 1;
     ri.valid_config = 1;
-
     if (!IsUSBNet()) {
+        ri.config_bytes_used = 0;
         return 0;
     }
-    
-    // Get region info - everything below is extra stuff that only the
-    // usbnet remotes seem to use.
+
+    // Get the User Config Region to find the config bytes used.
+    if ((err = ReadRegion(REGION_USER_CONFIG, ri.config_bytes_used, NULL,
+                          NULL, NULL, 0))) {
+        if (err != LC_ERROR_UNSUPP)
+            return err;
+        // Refused, not lost: the remote answered, so it is still in step and
+        // can be identified. Reading its config will fail the same way, and
+        // say so then.
+        debug("identifying without the size of region %d", REGION_USER_CONFIG);
+        ri.config_bytes_used = 0;
+    }
+
+    // Everything below only goes into the post to Logitech's website (web.cpp),
+    // which nothing needs any more. It was worked out on the 900 and 1100; a
+    // remote that answers one of these requests with something else - the
+    // Harmony 1000's firmware is older than either - is identified without it.
+    // One that does not answer at all is another matter: its reply may still
+    // arrive, as the answer to whatever is asked next, so that stays an error.
+    ri.num_regions = 0;
+    ri.region_ids = NULL;
+    ri.region_versions = NULL;
+    ri.home_id = 0;
+    ri.node_id = 0;
+    ri.tid = new char[1];
+    ri.tid[0] = '\0';
+
+    // 0 with the reply's parameters in out; -1 when the remote answered, but
+    // not with what was asked for; an LC_ERROR when it did not answer.
+    auto ask = [&](uint8_t cmd, uint32_t plen, uint8_t *params,
+                   uint8_t *reply, uint32_t want, TParamList &out) -> int {
+        if (Write(TYPE_REQUEST, cmd, plen, params)) {
+            debug("cannot send request %02X", cmd);
+            return LC_ERROR_WRITE;
+        }
+        if (Read(status, len, reply)) {
+            debug("no reply to request %02X", cmd);
+            return LC_ERROR_READ;
+        }
+        if (len < 4 || reply[1] != cmd || reply[2] != STATUS_OK) {
+            debug("request %02X answered with status %02X; left out", cmd,
+                  len >= 3 ? reply[2] : 0);
+            return -1;
+        }
+        ParseParams(len, reply, out);
+        if (out.count < want) {
+            debug("request %02X answered with %u parameters, not %u; left out",
+                  cmd, out.count, want);
+            return -1;
+        }
+        return 0;
+    };
+
+    // Get region info
     uint8_t rr[] = { 1, 1, 1 }; // AddByteParam(1);
-    if ((err = Write(TYPE_REQUEST, COMMAND_GET_REGION_IDS, 3, rr))) {
-        debug("Failed to write to remote");
-        return LC_ERROR;
-    }
-    uint8_t rgn[64];
-    if ((err = Read(status, len, rgn))) {
-        debug("Failed to read from remote");
-        return LC_ERROR;
-    }
-    ParseParams(len, rgn, pl);
-    if (pl.count == 1) {
+    uint8_t rgn[USBNET_REPLY_ROOM];
+    if ((err = ask(COMMAND_GET_REGION_IDS, 3, rr, rgn, 1, pl)) > 0)
+        return err;
+    if (err == 0 && pl.count == 1) {
         const unsigned int rc = *(pl.p[0]-1) & 0x3F;
         ri.num_regions = rc + 1;
         ri.region_ids = new uint8_t[ri.num_regions];
@@ -1128,85 +1207,48 @@ int CRemoteZ_Base::GetIdentity(TRemoteInfo &ri, THIDINFO &hid, lc_callback cb,
 
         // There seems to be an implied Region 0 that the Windows
         // software requests but it is not listed in the Region IDs.
-        uint8_t rz[] = { 1, 1, 0 }; // 1 parameter, 1 byte, value = 0
-        if ((err = Write(TYPE_REQUEST, COMMAND_GET_REGION_VERSION, 3, rz))) {
-            debug("Failed to write to remote");
-            return LC_ERROR;
-        }
-        uint8_t rgz[64];
-        if ((err = Read(status, len, rgz))) {
-            debug("Failed to read from remote");
-            return LC_ERROR;
-        }
-        CRemoteZ_Base::TParamList rzp;
-        ParseParams(len, rgz, rzp);
-        ri.region_ids[0] = 0x00; // Store region 0.
-        ri.region_versions[0] = new char[8];
-        snprintf(ri.region_versions[0], 8, "%d.%d", *(rzp.p[0]+1), *rzp.p[0]);
-
-        for(unsigned int r = 0; r < rc; ++r) {
-            const uint8_t rn = *(pl.p[0]+r);
+        // Region 0 goes first, then the ones the remote listed.
+        for (unsigned int r = 0; r <= rc; ++r) {
+            const uint8_t rn = r ? *(pl.p[0]+r-1) : 0;
             debug("Region %i", rn);
             uint8_t rv[] = { 1, 1, rn }; // AddByteParam(rn);
-            if ((err = Write(TYPE_REQUEST, COMMAND_GET_REGION_VERSION, 3,
-                             rv))) {
-                debug("Failed to write to remote");
-                return LC_ERROR;
-            }
-            uint8_t rgv[64];
-            if ((err = Read(status, len, rgv))) {
-                debug("Failed to read from remote");
-                return LC_ERROR;
-            }
+            uint8_t rgv[USBNET_REPLY_ROOM];
             CRemoteZ_Base::TParamList rp;
-            ParseParams(len, rgv, rp);
-            ri.region_ids[r+1] = rn;
-            ri.region_versions[r+1] = new char[8];
-            snprintf(ri.region_versions[r+1], 8, "%d.%d", *(rp.p[0]+1),
-                     *rp.p[0]);
+            ri.region_ids[r] = rn;
+            ri.region_versions[r] = new char[8];
+            ri.region_versions[r][0] = '\0';
+            if ((err = ask(COMMAND_GET_REGION_VERSION, 3, rv, rgv, 1, rp)) > 0)
+                return err;
+            if (err == 0)
+                snprintf(ri.region_versions[r], 8, "%d.%d", *(rp.p[0]+1),
+                         *rp.p[0]);
         }
     }
 
     // Get HOMEID, NODEID, TID
-    if ((err = Write(TYPE_REQUEST, COMMAND_GET_HOME_ID))) {
-        debug("Failed to write to remote");
-        return LC_ERROR;
-    }
-    if ((err = Read(status, len, rsp))) {
-        debug("Failed to read from remote");
-        return LC_ERROR;
-    }
-    ParseParams(len, rsp, pl);
-    ri.home_id = (*pl.p[0] << 24) + (*(pl.p[0]+1) << 16) +
-            (*(pl.p[0]+2) << 8) + *(pl.p[0]+3);
-    if ((err = Write(TYPE_REQUEST, COMMAND_GET_NODE_ID))) {
-        debug("Failed to write to remote");
-        return LC_ERROR;
-    }
-    if ((err = Read(status, len, rsp))) {
-        debug("Failed to read from remote");
-        return LC_ERROR;
-    }
-    ParseParams(len, rsp, pl);
-    ri.node_id = *pl.p[0];
+    if ((err = ask(COMMAND_GET_HOME_ID, 0, NULL, rsp, 1, pl)) > 0)
+        return err;
+    if (err == 0)
+        ri.home_id = (*pl.p[0] << 24) + (*(pl.p[0]+1) << 16) +
+                (*(pl.p[0]+2) << 8) + *(pl.p[0]+3);
+    if ((err = ask(COMMAND_GET_NODE_ID, 0, NULL, rsp, 1, pl)) > 0)
+        return err;
+    if (err == 0)
+        ri.node_id = *pl.p[0];
     // Get the "TID" - not entirely sure what this is, but it appears to be
     // contained in the INTERFACE_LIST.
-    if ((err = Write(TYPE_REQUEST, COMMAND_GET_INTERFACE_LIST))) {
-        debug("Failed to write to remote");
-        return LC_ERROR;
+    if ((err = ask(COMMAND_GET_INTERFACE_LIST, 0, NULL, rsp, 2, pl)) > 0)
+        return err;
+    if (err == 0) {
+        delete[] ri.tid;
+        ri.tid = new char[21];
+        ri.tid[0] = '0';
+        ri.tid[1] = 'x';
+        // "TID" appears to be contained in the middle of the INTERFACE_LIST.
+        for (int i = 0; i < 9; i++)
+            snprintf(&ri.tid[(i*2)+2], 3, "%02X", *(pl.p[1]+i+2));
+        ri.tid[20] = '\0';
     }
-    if ((err = Read(status, len, rsp))) {
-        debug("Failed to read from remote");
-        return LC_ERROR;
-    }
-    ParseParams(len, rsp, pl);
-    ri.tid = new char[21];
-    ri.tid[0] = '0';
-    ri.tid[1] = 'x';
-    // "TID" appears to be contained in the middle of the INTERFACE_LIST.
-    for (int i = 0; i < 9; i++)
-        snprintf(&ri.tid[(i*2)+2], 3, "%02X", *(pl.p[1]+i+2));
-    ri.tid[20] = '\0';
 
     // Get the "XMLUserRFSetting" - the usbnet remote appears to have a web
     // server running where the Windows driver grabs this data. It only feeds
@@ -1265,7 +1307,7 @@ int CRemoteZ_HID::ReadRegion(uint8_t region, uint32_t &rgn_len, uint8_t *rd,
     const uint32_t capacity = rgn_len;
     int err = 0;
     int cb_count = 0;
-    uint8_t rsp[60];
+    uint8_t rsp[USBNET_REPLY_ROOM];
     unsigned int rlen;
     uint8_t status;
 
@@ -1364,7 +1406,7 @@ int CRemoteZ_HID::ReadRegion(uint8_t region, uint32_t &rgn_len, uint8_t *rd,
             }
         }
 
-        debug("DATA %d, read %d bytes, %d bytes total", cb_count, rlen,
+        debug_packet("DATA %d, read %d bytes, %d bytes total", cb_count, rlen,
               data_read);
 
         if (cb) {
@@ -1467,7 +1509,7 @@ int CRemoteZ_Base::GetTime(const TRemoteInfo &ri, THarmonyTime &ht)
         debug("Failed to write to remote");
         return LC_ERROR_WRITE;
     }
-    uint8_t time[60];
+    uint8_t time[USBNET_REPLY_ROOM];
     unsigned int len;
     uint8_t status;
     if ((err = Read(status, len, time))) {
@@ -1526,7 +1568,7 @@ int CRemoteZ_Base::SetTime(const TRemoteInfo &ri, const THarmonyTime &ht,
         return LC_ERROR_WRITE;
     }
 
-    uint8_t rsp[60];
+    uint8_t rsp[USBNET_REPLY_ROOM];
     unsigned int len;
     uint8_t status;
     if ((err = Read(status, len, rsp))) {
@@ -1547,7 +1589,7 @@ int CRemoteZ_HID::TCPSendAndCheck(uint8_t cmd, uint32_t len, uint8_t *data,
     int err = 0;
     uint8_t status;
     unsigned int rlen;
-    uint8_t rsp[60];
+    uint8_t rsp[USBNET_REPLY_ROOM];
 
     if ((err = TCP_Write(TYPE_REQUEST, cmd, len, data))) {
         debug("Failed to send request %02X", cmd);
@@ -1593,7 +1635,7 @@ int CRemoteZ_HID::UpdateConfig(const uint32_t len, const uint8_t *wr,
         return LC_ERROR_WRITE;
     }
 
-    uint8_t rsp[60];
+    uint8_t rsp[USBNET_REPLY_ROOM];
     unsigned int rlen;
     uint8_t status;
 
@@ -1673,7 +1715,7 @@ int CRemoteZ_HID::UpdateConfig(const uint32_t len, const uint8_t *wr,
         }
         tlen -= pkt_len;
 
-        debug("DATA %d, sending %d bytes, %d bytes left", cb_count,
+        debug_packet("DATA %d, sending %d bytes, %d bytes left", cb_count,
               pkt_len, tlen);
 
         if ((err = TCPSendAndCheck(COMMAND_WRITE_UPDATE_DATA, pkt_len,

@@ -896,11 +896,11 @@ int _handle_ir_response(uint8_t rsp[64], uint32_t &ir_word, uint32_t &t_on,
                 // t == on time
                 t_on = t;
                 if (t_on) {
-                    debug("-%i\n", t_off);
+                    debug_packet("-%i\n", t_off);
                     if (ir_count < MAX_IR_SIGNAL_LENGTH) {
                         ir_signal[ir_count++] = t_off;
                     }
-                    debug("+%i\n", t_on);
+                    debug_packet("+%i\n", t_on);
                     if (ir_count < MAX_IR_SIGNAL_LENGTH) {
                         ir_signal[ir_count++] = t_on;
                     }
@@ -926,8 +926,8 @@ int _handle_ir_response(uint8_t rsp[64], uint32_t &ir_word, uint32_t &t_on,
                         freq = static_cast<uint32_t>(
                             static_cast<uint64_t>(t)
                                 *1000000/(t_on));
-                        debug("%i Hz", freq);
-                        debug("+%i", t_on);
+                        debug_packet("%i Hz", freq);
+                        debug_packet("+%i", t_on);
                         ir_signal[ir_count++] = t_on;
                     }
                     break;
@@ -1003,7 +1003,7 @@ int LearnIRInnerLoop(uint32_t *freq, uint32_t **ir_signal,
     if ((err == 0) && (*ir_signal_length > 0)) {
         /* we have actually got some signal */
         if (t_off) {
-            debug("-%i", t_off);
+            debug_packet("-%i", t_off);
         }
         /* make sure we record a final off */
         if (*ir_signal_length < MAX_IR_SIGNAL_LENGTH) {

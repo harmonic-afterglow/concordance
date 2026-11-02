@@ -35,11 +35,23 @@
 
 /* BEGIN GLOBAL SECTION */
 
+/*
+ * debug() goes to the trace (lc_get_trace()) in every build, and to stderr as
+ * well in a _DEBUG one. debug_packet() is for the lines a transfer repeats
+ * once per packet: only a _DEBUG build has those, so they cannot push what
+ * led up to a failure out of the trace.
+ */
+void lc_trace(const char *function, const char *format, ...)
+#ifdef __GNUC__
+    __attribute__((format(printf, 2, 3)))
+#endif
+    ;
+#define debug(FMT,...) lc_trace(__FUNCTION__, FMT, ##__VA_ARGS__)
 #ifdef _DEBUG
-#define debug(FMT,...) fprintf(stderr, "DEBUG (%s): " FMT "\n", __FUNCTION__,\
-         ##__VA_ARGS__);
+#define debug_packet(FMT,...) fprintf(stderr, "DEBUG (%s): " FMT "\n", \
+         __FUNCTION__, ##__VA_ARGS__)
 #else
-#define debug(FMT,...)
+#define debug_packet(FMT,...) do {} while (0)
 #endif
 
 #include <string>

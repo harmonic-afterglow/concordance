@@ -2,7 +2,7 @@
 ACLOCAL_AMFLAGS = -I m4
 lib_LTLIBRARIES = libconcord.la
 AUTOMAKE_OPTIONS = subdir-objects
-libconcord_la_SOURCES = remote.cpp remote_z.cpp libconcord.cpp binaryfile.cpp \
+libconcord_la_SOURCES = remote.cpp remote_z.cpp libconcord.cpp binaryfile.cpp trace.cpp \
 	web.cpp usblan.cpp binaryfile.h hid.h protocol_z.h \
 	remote_info.h web.h protocol.h remote.h usblan.h xml_headers.h \
 	operationfile.cpp remote_mh.cpp libusbhid.cpp libhidapi.cpp \

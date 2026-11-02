@@ -281,7 +281,8 @@ void learn_remote(const uint8_t *mac)
     if (!link.remote_mac_known || memcmp(link.remote_mac, mac, 6)) {
         memcpy(link.remote_mac, mac, 6);
         link.remote_mac_known = true;
-        debug("remote is %02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1],
+        debug("the remote said where it is");
+        debug_packet("remote is %02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1],
               mac[2], mac[3], mac[4], mac[5]);
     }
 }

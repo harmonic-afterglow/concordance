@@ -190,6 +190,17 @@ const char *get_time_timezone();
 const char *lc_strerror(int err);
 const char *lc_cb_stage_str(int stage);
 /*
+ * What libconcord last did, as its debug lines: the most recent ones, one per
+ * line, oldest first. Kept in every build - an error code alone does not say
+ * which of the many requests behind get_identity() the remote refused - but
+ * without the per-packet lines a config read would fill it with.
+ *
+ * The string stays valid until the next call to lc_get_trace() or
+ * lc_clear_trace(). Not thread-safe, like the rest of libconcord.
+ */
+const char *lc_get_trace();
+void lc_clear_trace();
+/*
  * Many functions require you to pass in a ptr which then gets pointed
  * to data that we allocate. You should then call this to clean that
  * data up when you are done with it.

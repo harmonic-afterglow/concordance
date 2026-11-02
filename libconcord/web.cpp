@@ -332,8 +332,8 @@ int Post(uint8_t *xml, uint32_t xml_size, const char *root, TRemoteInfo &ri,
 
     debug("Connecting to: %s", server.c_str());
     debug("Path: %s", path.c_str());
-    debug("Cookie: %s", cookie.c_str());
-    debug("UserId: %s", userid.c_str());
+    debug_packet("Cookie: %s", cookie.c_str());
+    debug_packet("UserId: %s", userid.c_str());
 
     string post;
     if (learn_seq == NULL) {
@@ -353,7 +353,7 @@ int Post(uint8_t *xml, uint32_t xml_size, const char *root, TRemoteInfo &ri,
             format_string(&post_data, "%s", post_xml_trailer);
         }
 
-        debug("post data: %s", post_data.c_str());
+        debug_packet("post data: %s", post_data.c_str());
 
         string post_data_encoded;
         UrlEncode(post_data.c_str(), post_data_encoded);
@@ -367,7 +367,7 @@ int Post(uint8_t *xml, uint32_t xml_size, const char *root, TRemoteInfo &ri,
         post += "&UserId=" + userid;
     }
 
-    debug("%s", post.c_str());
+    debug_packet("%s", post.c_str());
 
     return Zap(server, path, cookie, post);
 }

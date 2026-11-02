@@ -774,9 +774,15 @@ int deinit_concord()
 
 int _get_identity(lc_callback cb, void *cb_arg, uint32_t cb_stage)
 {
-    if ((rmt->GetIdentity(ri, hid_info, cb, cb_arg, cb_stage))) {
-        return LC_ERROR;
+    int err;
+    if ((err = rmt->GetIdentity(ri, hid_info, cb, cb_arg, cb_stage))) {
+        // Which step it was is in the trace; what went wrong, here.
+        debug("identifying the remote failed: %s", lc_strerror(err));
+        return err == LC_ERROR_INVALID_CONFIG ? LC_ERROR : err;
     }
+    debug("arch %d, skin %d, firmware %d.%d, type %d, board %d.%d.%d",
+          ri.architecture, ri.skin, ri.fw_ver_major, ri.fw_ver_minor,
+          ri.fw_type, ri.hw_ver_major, ri.hw_ver_minor, ri.hw_ver_micro);
 
     /* Do some sanity checking */
     if (ri.flash->size == 0) {

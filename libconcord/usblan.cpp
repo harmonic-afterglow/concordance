@@ -252,7 +252,7 @@ int UsbLan_Write(unsigned int len, uint8_t *data)
         int err = UsbNetLink_Send(link_conn, data, len);
         if (err)
             return err;
-        debug("%i bytes sent", len);
+        debug_packet("%i bytes sent", len);
         return 0;
     }
 #endif
@@ -263,7 +263,7 @@ int UsbLan_Write(unsigned int len, uint8_t *data)
         return LC_ERROR_OS_NET;
     }
 
-    debug("%i bytes sent", err);
+    debug_packet("%i bytes sent", err);
 
     return 0;
 }
@@ -278,7 +278,7 @@ int UsbLan_Read(unsigned int &len, uint8_t *data)
             len = 0;
             return err;
         }
-        debug("%i bytes received", len);
+        debug_packet("%i bytes received", len);
         return 0;
     }
 #endif
@@ -291,7 +291,7 @@ int UsbLan_Read(unsigned int &len, uint8_t *data)
     } 
 
     len = static_cast<unsigned int>(err);
-    debug("%i bytes received", len);
+    debug_packet("%i bytes received", len);
 
     return 0;
 }
@@ -379,7 +379,7 @@ int GetXMLUserRFSetting(char **data)
         closesocket(web_sock);
         return LC_ERROR_OS_NET;
     }
-    debug("%i bytes sent", err);
+    debug_packet("%i bytes sent", err);
 
     unsigned int len = 0;
     char* buf_ptr = buf;
@@ -393,7 +393,7 @@ int GetXMLUserRFSetting(char **data)
         }
         len += err;
         buf_ptr += err;
-        debug("%i bytes received", err);
+        debug_packet("%i bytes received", err);
     } while (err > 0 && len < sizeof(buf)-1); // recv returns 0 at the end
     closesocket(web_sock);
     buf[len] = '\0';
