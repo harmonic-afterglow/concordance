@@ -1514,19 +1514,19 @@ static const uint32_t REGION_READ_ROOM = 32 * 1024 * 1024;
 
 int get_region_count()
 {
-    return is_usbnet_remote() ? ri.num_regions : 0;
+    return (rmt && is_usbnet_remote()) ? ri.num_regions : 0;
 }
 
 int get_region_id(int index)
 {
-    if (!is_usbnet_remote() || index < 0 || index >= ri.num_regions)
+    if (!rmt || !is_usbnet_remote() || index < 0 || index >= ri.num_regions)
         return -1;
     return ri.region_ids[index];
 }
 
 const char *get_region_version(int index)
 {
-    if (!is_usbnet_remote() || index < 0 || index >= ri.num_regions)
+    if (!rmt || !is_usbnet_remote() || index < 0 || index >= ri.num_regions)
         return NULL;
     return ri.region_versions[index];
 }
@@ -1534,7 +1534,7 @@ const char *get_region_version(int index)
 int read_region_from_remote(uint8_t region, uint8_t **out, uint32_t *size,
                             lc_callback cb, void *cb_arg)
 {
-    if (!is_usbnet_remote())
+    if (!rmt || !is_usbnet_remote())
         return LC_ERROR_UNSUPP;
     // Read once into room for any region: the remote says how big it is as
     // the read starts. Measuring first is not cheaper - it reads the whole
@@ -1560,7 +1560,7 @@ int read_region_from_remote(uint8_t region, uint8_t **out, uint32_t *size,
 int write_region_to_remote(uint8_t region, const uint8_t *in, uint32_t size,
                            lc_callback cb, void *cb_arg)
 {
-    if (!is_usbnet_remote())
+    if (!rmt || !is_usbnet_remote())
         return LC_ERROR_UNSUPP;
     if (!size)
         return LC_ERROR_INVALID_CONFIG;
