@@ -1194,6 +1194,9 @@ int CRemoteZ_Base::GetIdentity(TRemoteInfo &ri, THIDINFO &hid, lc_callback cb,
         // say so then.
         debug("identifying without the size of region %d", REGION_USER_CONFIG);
         ri.config_bytes_used = 0;
+        // Written, never read: a Harmony 1000's firmware reads out only its
+        // Z-Wave regions, in Safe Mode too. is_config_dump_supported() says so.
+        ri.config_unreadable = true;
     }
 
     // Everything below only goes into the post to Logitech's website (web.cpp),

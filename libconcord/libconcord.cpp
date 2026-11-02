@@ -584,7 +584,10 @@ int _fix_magic_bytes(uint8_t *in, uint32_t size)
  */
 int is_config_dump_supported()
 {
-    return 0;
+    // A remote that refused its config region during get_identity() takes a
+    // config but does not hand one back (a Harmony 1000). Before identify,
+    // nothing is known, and the answer stays yes.
+    return ri.config_unreadable ? LC_ERROR_UNSUPP : 0;
 }
 
 int is_config_update_supported()
@@ -776,6 +779,8 @@ int deinit_concord()
 int _get_identity(lc_callback cb, void *cb_arg, uint32_t cb_stage)
 {
     int err;
+    // Only the remote identified now decides this, not one identified before.
+    ri.config_unreadable = false;
     if ((err = rmt->GetIdentity(ri, hid_info, cb, cb_arg, cb_stage))) {
         // Which step it was is in the trace; what went wrong, here.
         debug("identifying the remote failed: %s", lc_strerror(err));
@@ -1005,6 +1010,11 @@ int read_config_from_remote(uint8_t **out, uint32_t *size, lc_callback cb,
 
     if (!ri.valid_config) {
         return LC_ERROR_INVALID_CONFIG;
+    }
+
+    // Asked and refused once already (see is_config_dump_supported()).
+    if (ri.config_unreadable) {
+        return LC_ERROR_UNSUPP;
     }
 
     if (!cb_arg) {

@@ -1072,6 +1072,17 @@ int main(int argc, char *argv[])
     }
 
     /*
+     * Only identify can tell some remotes apart: a Harmony 1000 takes a config
+     * but never hands one back, in Safe Mode too.
+     */
+    if (mode == MODE_DUMP_CONFIG && is_config_dump_supported()) {
+        fprintf(stderr, "Sorry, this remote does not let its configuration be"
+            " read back. It can still be written.\n");
+        err = LC_ERROR_UNSUPP;
+        goto cleanup;
+    }
+
+    /*
      * Now do whatever we've been asked to do
      */
 

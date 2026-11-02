@@ -156,6 +156,10 @@ int get_config_bytes_total();
  * meaningless.
  *
  * This will return 0 for yes and LC_ERROR_UNSUPP otherwise.
+ *
+ * is_config_dump_supported() is only certain after get_identity(): a
+ * remote that refuses its config region then (a Harmony 1000, which takes
+ * a config but never hands one back, in Safe Mode too) answers no.
  */
 int is_config_dump_supported();
 int is_config_update_supported();

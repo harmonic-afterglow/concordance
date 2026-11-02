@@ -131,6 +131,9 @@ struct TRemoteInfo {
     bool valid_config;
     uint32_t config_bytes_used;
     uint32_t max_config_size;
+    /* the remote refused its config region when identify asked: it can be
+       written but not read back (a Harmony 1000) */
+    bool config_unreadable;
     /* usbnet only from here down */
     uint8_t num_regions;
     uint8_t *region_ids;
