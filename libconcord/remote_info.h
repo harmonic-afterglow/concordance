@@ -88,7 +88,8 @@ static const TModel ModelList[]={
 	{ MFG_HAR,	"Harmony 670",		NULL },	
 	{ MFG_COOL,	"Harmony 552",		"Mocha Grande" },
 	{ MFG_HAR,	"Harmony 1000i",	"Cognac" },
-	{ MFG_UNK,	"Unknown",			NULL },
+	/* firmware 53.x: the 1000's regions, its own Z-Wave region */
+	{ MFG_HAR,	"Harmony 1000",		"Cognac" },
 	{ MFG_HAR,	"Harmony One",			NULL },
 	{ MFG_UNK,	"Unknown",			NULL },
 	{ MFG_UNK,	"Unknown",			NULL },

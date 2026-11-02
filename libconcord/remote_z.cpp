@@ -1225,7 +1225,7 @@ int CRemoteZ_Base::GetIdentity(TRemoteInfo &ri, THIDINFO &hid, lc_callback cb,
         }
     }
 
-    // Get HOMEID, NODEID, TID
+    // Get HOMEID, NODEID
     if ((err = ask(COMMAND_GET_HOME_ID, 0, NULL, rsp, 1, pl)) > 0)
         return err;
     if (err == 0)
@@ -1235,33 +1235,15 @@ int CRemoteZ_Base::GetIdentity(TRemoteInfo &ri, THIDINFO &hid, lc_callback cb,
         return err;
     if (err == 0)
         ri.node_id = *pl.p[0];
-    // Get the "TID" - not entirely sure what this is, but it appears to be
-    // contained in the INTERFACE_LIST.
-    if ((err = ask(COMMAND_GET_INTERFACE_LIST, 0, NULL, rsp, 2, pl)) > 0)
-        return err;
-    if (err == 0) {
-        delete[] ri.tid;
-        ri.tid = new char[21];
-        ri.tid[0] = '0';
-        ri.tid[1] = 'x';
-        // "TID" appears to be contained in the middle of the INTERFACE_LIST.
-        for (int i = 0; i < 9; i++)
-            snprintf(&ri.tid[(i*2)+2], 3, "%02X", *(pl.p[1]+i+2));
-        ri.tid[20] = '\0';
-    }
+    // Not asked for: the "TID" in the INTERFACE_LIST and the XMLUserRFSetting
+    // from the remote's web server. Only the post to Logitech's website used
+    // them. A Harmony 1000 (skin 53, firmware 5.0) answers every request before
+    // INTERFACE_LIST and never that one, which cost libconcord's whole 30-second
+    // wait and then the identify; a remote in Safe Mode runs no web server.
+    // web.cpp gets them empty.
+    ri.xml_user_rf_setting = new char[1];
+    ri.xml_user_rf_setting[0] = '\0';
 
-    // Get the "XMLUserRFSetting" - the usbnet remote appears to have a web
-    // server running where the Windows driver grabs this data. It only feeds
-    // the posts to Logitech's website, and a remote in Safe Mode runs no web
-    // server (a Harmony 900 refuses port 80 there while 3074 works), so its
-    // absence is not a reason to fail: the remote is still there to be read
-    // and written, which is how one gets out of Safe Mode.
-    if ((err = GetXMLUserRFSetting(&ri.xml_user_rf_setting))) {
-        debug("No XML User RF Settings (no web server: Safe Mode?)");
-        ri.xml_user_rf_setting = new char[1];
-        ri.xml_user_rf_setting[0] = '\0';
-    }
-    
     return 0;
 }
 

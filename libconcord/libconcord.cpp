@@ -1035,12 +1035,18 @@ int read_config_from_remote(uint8_t **out, uint32_t *size, lc_callback cb,
         }
         *size = ri.config_bytes_used;
         *out = new uint8_t[*size];
-        if (!rmt->ReadFlash(ri.arch->config_base, *size, *out, ri.protocol,
-                            false, cb, cb_arg, LC_CB_STAGE_READ_CONFIG)) {
+        err = rmt->ReadFlash(ri.arch->config_base, *size, *out, ri.protocol,
+                             false, cb, cb_arg, LC_CB_STAGE_READ_CONFIG);
+        if (!err) {
             return 0;
         }
         delete[] *out;
         *out = NULL;
+        // A remote that will not hand the region over (a Harmony 1000 that
+        // lists no Region 4) says the same however often it is asked.
+        if (err == LC_ERROR_UNSUPP) {
+            return err;
+        }
         if (!is_usbnet_remote() || attempt == 2) {
             return LC_ERROR_READ;
         }
