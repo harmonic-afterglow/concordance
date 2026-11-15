@@ -28,6 +28,12 @@
 
 #include "hid.h"
 #include <hidapi/hidapi.h>
+#if defined(_WIN32) && defined(HID_API_MAKE_VERSION)
+#if HID_API_VERSION >= HID_API_MAKE_VERSION(0, 15, 0)
+#define LC_HID_WRITE_TIMEOUT
+#include <hidapi/hidapi_winapi.h>
+#endif
+#endif
 #include <errno.h>
 #include <string.h>
 #include <stdlib.h>
@@ -45,6 +51,14 @@
 #define NATIONAL_PID 0xc359
 
 #define USB_PACKET_LENGTH 64
+
+/*
+ * hidapi gives up on a write on Windows after 1 s by default, and a Harmony
+ * 880 on Windows has had its first reports time out there. The write returns
+ * as soon as the remote takes the report, so this only moves when we give up
+ * on one that is not taken. hidapi before 0.15 has no way to change it.
+ */
+#define WRITE_TIMEOUT_MS 5000
 
 hid_device *h_dev;
 
@@ -109,6 +123,10 @@ int FindRemote(THIDINFO &hid_info)
         debug("Failed to establish communication with remote");
         return LC_ERROR_CONNECT;
     }
+
+#ifdef LC_HID_WRITE_TIMEOUT
+    hid_winapi_set_write_timeout(h_dev, WRITE_TIMEOUT_MS);
+#endif
 
     // Fill in hid_info
     const size_t buf_len = 128;
