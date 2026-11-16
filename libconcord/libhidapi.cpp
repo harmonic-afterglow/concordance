@@ -31,6 +31,13 @@
 #include <errno.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
+#ifdef _WIN32
+#include <setupapi.h>
+#include <cfgmgr32.h>
+#elif defined(HAVE_USBNET_LINK)
+#include <libusb.h>
+#endif
 
 /*
  * Harmonies either fall under logitech's VendorID (0x046d), and logitech's
@@ -87,19 +94,19 @@ void ShutdownUSB()
     }
 }
 
-bool is_harmony(struct hid_device_info *dev)
+static bool is_harmony_ids(unsigned int vid, unsigned int pid)
 {
     /* IF vendor == logitech AND product is in range of harmony
      *   OR vendor == National Semiconductor and product is harmony
      */
-    if ((dev->vendor_id == LOGITECH_VID
-         && (dev->product_id >= LOGITECH_MIN_PID
-             && dev->product_id <= LOGITECH_MAX_PID))
-         || (dev->vendor_id == NATIONAL_VID
-             && dev->product_id == NATIONAL_PID)) {
-        return true;
-    }
-    return false;
+    return (vid == LOGITECH_VID
+            && pid >= LOGITECH_MIN_PID && pid <= LOGITECH_MAX_PID)
+        || (vid == NATIONAL_VID && pid == NATIONAL_PID);
+}
+
+bool is_harmony(struct hid_device_info *dev)
+{
+    return is_harmony_ids(dev->vendor_id, dev->product_id);
 }
 
 bool HID_RemotePresent()
@@ -193,6 +200,127 @@ int HID_WriteReport(const uint8_t *data)
 
     return 0;
 }
+
+int HID_WriteReportControl(const uint8_t *data)
+{
+#if defined(HID_API_MAKE_VERSION) && \
+    HID_API_VERSION >= HID_API_MAKE_VERSION(0, 15, 0)
+    uint8_t newdata[USB_PACKET_LENGTH+1];
+    newdata[0] = 0x00;
+    memcpy(&newdata[1], data, USB_PACKET_LENGTH);
+    int err = hid_send_output_report(h_dev, newdata, USB_PACKET_LENGTH + 1);
+    if (err < 0) {
+        debug("No SET_REPORT either: %d (%ls)", err, hid_error(h_dev));
+        return err;
+    }
+    return 0;
+#else
+    return -1;
+#endif
+}
+
+/*
+ * Some remotes take requests only in the moment after they are plugged in
+ * (a Monster-branded 880). These bring that moment back without a hand on
+ * the cable, where the system lets an ordinary user: libusb's port reset on
+ * Linux and macOS, and on Windows an eject - what "Safely Remove" does - and
+ * a fresh look for hardware, which an ordinary user may ask for.
+ */
+#ifdef _WIN32
+int HID_ResetRemote()
+{
+    HDEVINFO set = SetupDiGetClassDevsA(NULL, "USB", NULL,
+                                        DIGCF_ALLCLASSES | DIGCF_PRESENT);
+    if (set == INVALID_HANDLE_VALUE) {
+        debug("Could not list USB devices: %lu", GetLastError());
+        return LC_ERROR_OS;
+    }
+    SP_DEVINFO_DATA info;
+    info.cbSize = sizeof(info);
+    DEVINST remote = 0;
+    char id[MAX_DEVICE_ID_LEN];
+    for (DWORD i = 0; SetupDiEnumDeviceInfo(set, i, &info); i++) {
+        unsigned int vid, pid;
+        if (SetupDiGetDeviceInstanceIdA(set, &info, id, sizeof(id), NULL)
+            && sscanf(id, "USB\\VID_%4x&PID_%4x", &vid, &pid) == 2
+            && is_harmony_ids(vid, pid)) {
+            remote = info.DevInst;
+            break;
+        }
+    }
+    SetupDiDestroyDeviceInfoList(set);
+    if (!remote) {
+        debug("No Harmony among the USB devices");
+        return LC_ERROR_CONNECT;
+    }
+
+    DEVINST parent;
+    if (CM_Get_Parent(&parent, remote, 0) != CR_SUCCESS)
+        parent = 0;
+    PNP_VETO_TYPE veto = PNP_VetoTypeUnknown;
+    char vetoer[MAX_PATH] = "";
+    CONFIGRET cr = CM_Request_Device_EjectA(remote, &veto, vetoer,
+                                            sizeof(vetoer), 0);
+    if (cr != CR_SUCCESS || veto != PNP_VetoTypeUnknown) {
+        debug("Windows did not let the remote go: %lu, veto %d by %s",
+              (unsigned long)cr, (int)veto, vetoer);
+        return LC_ERROR_OS;
+    }
+    Sleep(500);
+    if (!parent) {
+        debug("Ejected the remote; no hub to look on again");
+        return 0;
+    }
+    cr = CM_Reenumerate_DevNode(parent, CM_REENUMERATE_SYNCHRONOUS);
+    debug("Ejected the remote and asked Windows to look again: %lu",
+          (unsigned long)cr);
+    return 0;
+}
+#elif defined(HAVE_USBNET_LINK)
+int HID_ResetRemote()
+{
+    libusb_context *ctx;
+    if (libusb_init(&ctx)) {
+        debug("libusb would not start");
+        return LC_ERROR_OS;
+    }
+    libusb_device **list;
+    ssize_t n = libusb_get_device_list(ctx, &list);
+    int err = LC_ERROR_CONNECT;
+    for (ssize_t i = 0; i < n; i++) {
+        struct libusb_device_descriptor d;
+        if (libusb_get_device_descriptor(list[i], &d)
+            || !is_harmony_ids(d.idVendor, d.idProduct))
+            continue;
+        libusb_device_handle *handle;
+        int r = libusb_open(list[i], &handle);
+        if (r) {
+            debug("Could not open the remote to reset it: %s",
+                  libusb_error_name(r));
+            err = LC_ERROR_OS;
+            break;
+        }
+        r = libusb_reset_device(handle);
+        // NOT_FOUND: it came back as a new device, which is the point.
+        debug("USB reset of the remote: %s",
+              r ? libusb_error_name(r) : "done");
+        libusb_close(handle);
+        err = (r == 0 || r == LIBUSB_ERROR_NOT_FOUND) ? 0 : LC_ERROR_OS;
+        break;
+    }
+    if (n >= 0)
+        libusb_free_device_list(list, 1);
+    libusb_exit(ctx);
+    if (err == LC_ERROR_CONNECT)
+        debug("No Harmony on USB to reset");
+    return err;
+}
+#else
+int HID_ResetRemote()
+{
+    return LC_ERROR_UNSUPP;
+}
+#endif
 
 int HID_ReadReport(uint8_t *data, unsigned int timeout)
 {

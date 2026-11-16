@@ -40,9 +40,12 @@
  * waits a second, resets the remote's USB state and asks once more. hidapi
  * gives up on a write after 1 s, and an 880-platform remote that client
  * reaches has not taken our first request in 5 s. So identifying a remote
- * waits as long as Logitech's client does, in slices lc_cancel() can stop.
+ * waits as Logitech's client does, in slices lc_cancel() can stop - but not
+ * forever for a write: that remote turned out to take requests only in the
+ * moment after it is plugged in, and nothing after, so a caller is better
+ * told soon and left to reset the remote (lc_reset_remote_usb()).
  */
-#define PATIENT_WRITE_MS 30000
+#define PATIENT_WRITE_MS 10000
 #define VERSION_REPLY_MS 20000
 #define REPLY_SLICE_MS 500
 
@@ -83,6 +86,20 @@ static int patient_write(const uint8_t *data, int *tries)
         ++*tries;
         if (!(err = HID_WriteReport(data)) || ms_since(start) >= PATIENT_WRITE_MS)
             break;
+        /*
+         * Not taken on the interrupt pipe: try the control pipe once. Only
+         * the identity's requests come here, GET_VERSION and the USB reset,
+         * which change nothing on the remote however they arrive.
+         */
+        if (*tries == 1 && ms_since(sent) >= 200) {
+            HID_Quiet(false);
+            if (HID_WriteReportControl(data) == 0) {
+                debug("The remote took command %02X as a SET_REPORT", data[0]);
+                err = 0;
+                break;
+            }
+            HID_Quiet(true);
+        }
         /*
          * A send the remote ignores fails after hidapi's second; one that
          * fails at once means the remote is gone, unplugged most likely.

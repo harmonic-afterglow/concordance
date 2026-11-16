@@ -38,8 +38,20 @@ void ShutdownUSB();
 int FindRemote(THIDINFO &hid_info);
 /* Whether a Harmony is attached as a HID device, without opening it. */
 bool HID_RemotePresent();
+/*
+ * Make the attached Harmony go through USB enumeration again, as near to
+ * unplugging it as the system allows without an administrator. With no
+ * session open. 0, or an LC_ERROR_*.
+ */
+int HID_ResetRemote();
 
 int HID_WriteReport(const uint8_t *data);
+/*
+ * The same report as a SET_REPORT on the control pipe, which a remote's USB
+ * controller serves apart from its interrupt pipe. Negative where the HID
+ * library cannot send one, or the remote refused it.
+ */
+int HID_WriteReportControl(const uint8_t *data);
 int HID_ReadReport(uint8_t *data, unsigned int timeout = 1000);
 /*
  * Leave a failed write and a timed out read out of the trace: for a caller

@@ -51,7 +51,7 @@ case $host_os in
   mingw*)
     USBLIB="hidapi"
     AC_DEFINE([WANT_HIDAPI], [1], [Want hidapi])
-    LIBCONCORD_LDFLAGS="-l$USBLIB -lwsock32 -no-undefined"
+    LIBCONCORD_LDFLAGS="-l$USBLIB -lwsock32 -lsetupapi -lcfgmgr32 -no-undefined"
     ;;
   k*bsd*-gnu)
     USBLIB="hidapi"
