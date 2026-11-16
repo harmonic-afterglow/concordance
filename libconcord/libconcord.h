@@ -214,6 +214,13 @@ void lc_clear_trace();
  */
 void lc_cancel(int on);
 /*
+ * 1 when a Harmony is attached as a USB HID device, 0 when none is. Opens
+ * nothing and sends nothing, so it can be asked often: what a caller waiting
+ * for a remote to be plugged in polls. Says nothing of the USB network
+ * remotes (900, 1000, 1100).
+ */
+int lc_remote_present();
+/*
  * Many functions require you to pass in a ptr which then gets pointed
  * to data that we allocate. You should then call this to clean that
  * data up when you are done with it.

@@ -102,6 +102,17 @@ bool is_harmony(struct usb_device *h_dev)
     return false;
 }
 
+bool HID_RemotePresent()
+{
+    usb_find_busses();
+    usb_find_devices();
+    for (usb_bus *bus = usb_busses; bus; bus = bus->next)
+        for (struct usb_device *dev = bus->devices; dev; dev = dev->next)
+            if (is_harmony(dev))
+                return true;
+    return false;
+}
+
 /*
  * Find a HID device with VendorID == 0x046D ||
  *    (VendorID == 0x0400 && ProductID == 0xC359)

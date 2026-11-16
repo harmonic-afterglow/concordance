@@ -36,6 +36,8 @@ int InitUSB();
 void ShutdownUSB();
 
 int FindRemote(THIDINFO &hid_info);
+/* Whether a Harmony is attached as a HID device, without opening it. */
+bool HID_RemotePresent();
 
 int HID_WriteReport(const uint8_t *data);
 int HID_ReadReport(uint8_t *data, unsigned int timeout = 1000);

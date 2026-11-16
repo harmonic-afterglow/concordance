@@ -102,6 +102,17 @@ bool is_harmony(struct hid_device_info *dev)
     return false;
 }
 
+bool HID_RemotePresent()
+{
+    hid_init();
+    struct hid_device_info *devs = hid_enumerate(0x0, 0x0);
+    bool found = false;
+    for (struct hid_device_info *cur = devs; cur && !found; cur = cur->next)
+        found = is_harmony(cur);
+    hid_free_enumeration(devs);
+    return found;
+}
+
 /*
  * Find a HID device that is a Harmony
  */

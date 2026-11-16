@@ -71,6 +71,7 @@ static int patient_write(const uint8_t *data, int *tries)
 {
     const auto start = std::chrono::steady_clock::now();
     int err;
+    int fast_failures = 0;
     *tries = 0;
     HID_Quiet(true);
     for (;;) {
@@ -82,13 +83,24 @@ static int patient_write(const uint8_t *data, int *tries)
         ++*tries;
         if (!(err = HID_WriteReport(data)) || ms_since(start) >= PATIENT_WRITE_MS)
             break;
-        // A send that fails at once (the remote gone) must not spin.
-        if (ms_since(sent) < 200)
+        /*
+         * A send the remote ignores fails after hidapi's second; one that
+         * fails at once means the remote is gone, unplugged most likely.
+         */
+        if (ms_since(sent) >= 200) {
+            fast_failures = 0;
+        } else if (++fast_failures == 3) {
+            debug("The remote is gone");
+            err = LC_ERROR_CONNECT;
+            break;
+        } else {
             sleep_ms(200);
+        }
     }
     HID_Quiet(false);
     if (err == LC_ERROR_CANCELLED) {
         debug("Cancelled while sending command %02X", data[0]);
+    } else if (err == LC_ERROR_CONNECT) {
     } else if (err) {
         debug("The remote took no command %02X in %lld ms (%d tries)",
               data[0], ms_since(start), *tries);
@@ -209,8 +221,9 @@ int CRemote::GetIdentity(TRemoteInfo &ri, THIDINFO &hid, lc_callback cb,
             debug("Asking for the version again, after a USB reset");
             sleep_ms(1000);
             const uint8_t reset[64] = { COMMAND_RESET, COMMAND_RESET_USB };
-            if (patient_write(reset, &tries) == LC_ERROR_CANCELLED)
-                return LC_ERROR_CANCELLED;
+            err = patient_write(reset, &tries);
+            if (err == LC_ERROR_CANCELLED || err == LC_ERROR_CONNECT)
+                return err;
             resent = true;
         }
         if ((err = patient_write(qid, &tries))) {
@@ -221,8 +234,9 @@ int CRemote::GetIdentity(TRemoteInfo &ri, THIDINFO &hid, lc_callback cb,
             resent = resent || tries > 1;
             break;
         }
-        if (err == LC_ERROR_CANCELLED)
-            return LC_ERROR_CANCELLED;
+        // stopped, or the remote is gone: asking again cannot help
+        if (err == LC_ERROR_CANCELLED || err == LC_ERROR_CONNECT)
+            return err;
         if (attempt == 1)
             return 1;
     }
