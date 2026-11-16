@@ -198,6 +198,13 @@ int FindRemote(THIDINFO &hid_info)
     return 0;
 }
 
+static bool quiet;
+
+void HID_Quiet(bool on)
+{
+    quiet = on;
+}
+
 int HID_WriteReport(const uint8_t *data)
 {
     /*
@@ -211,8 +218,9 @@ int HID_WriteReport(const uint8_t *data)
         orl, 500);
 
     if (err < 0) {
-        debug("Failed to write to device: %d (%s)", err,
-              strerror(-err));
+        if (!quiet)
+            debug("Failed to write to device: %d (%s)", err,
+                  strerror(-err));
         return err;
     }
 
@@ -226,7 +234,8 @@ int HID_ReadReport(uint8_t *data, unsigned int timeout)
         reinterpret_cast<char *>(data), irl, timeout);
 
     if (err == -ETIMEDOUT) {
-        debug("Timeout on interrupt read from device");
+        if (!quiet)
+            debug("Timeout on interrupt read from device");
         return err;
     }
 

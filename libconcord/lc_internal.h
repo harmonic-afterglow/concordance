@@ -63,5 +63,7 @@ void report_net_error(const char *msg);
 int is_z_remote();
 int is_usbnet_remote();
 int is_mh_remote();
+/* Whether lc_cancel() has asked for the current wait to stop. */
+bool lc_cancelled();
 
 #endif // ifndef LC_INTERNAL_H

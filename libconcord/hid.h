@@ -39,5 +39,10 @@ int FindRemote(THIDINFO &hid_info);
 
 int HID_WriteReport(const uint8_t *data);
 int HID_ReadReport(uint8_t *data, unsigned int timeout = 1000);
+/*
+ * Leave a failed write and a timed out read out of the trace: for a caller
+ * that tries again in short slices and says once what came of it.
+ */
+void HID_Quiet(bool on);
 
 #endif

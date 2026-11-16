@@ -43,6 +43,7 @@
 #define LC_ERROR_INVALID_CONFIG 16
 #define LC_ERROR_IR_OVERFLOW 17
 #define LC_ERROR_IR_TIMEOUT 18
+#define LC_ERROR_CANCELLED 19
 
 /*
  * Filetypes, used by identity_file()
@@ -204,6 +205,14 @@ const char *lc_cb_stage_str(int stage);
  */
 const char *lc_get_trace();
 void lc_clear_trace();
+/*
+ * Stop waiting for a remote that has not answered yet: get_identity(), while
+ * it waits for the remote to take its first requests or to answer them,
+ * returns LC_ERROR_CANCELLED within about a second. Unlike the rest of
+ * libconcord, safe to call from any thread while another call runs.
+ * lc_cancel(0) takes it back; nothing else does, so clear it before starting.
+ */
+void lc_cancel(int on);
 /*
  * Many functions require you to pass in a ptr which then gets pointed
  * to data that we allocate. You should then call this to clean that

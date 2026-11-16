@@ -34,6 +34,7 @@
 #include <list>
 #include <unistd.h>
 #include <vector>
+#include <atomic>
 #include "libconcord.h"
 #include "lc_internal.h"
 #include "remote.h"
@@ -289,6 +290,18 @@ const char *get_time_timezone()
  * PUBLIC HELPER FUNCTIONS
  */
 
+static std::atomic<int> cancel_requested(0);
+
+void lc_cancel(int on)
+{
+    cancel_requested = on ? 1 : 0;
+}
+
+bool lc_cancelled()
+{
+    return cancel_requested != 0;
+}
+
 const char *lc_strerror(int err)
 {
     switch (err) {
@@ -364,6 +377,10 @@ need to wait a few additional seconds for your remote to be fully connected.";
         case LC_ERROR_IR_OVERFLOW:
             return
             "Received IR signal is too long - release key earlier";
+            break;
+
+        case LC_ERROR_CANCELLED:
+            return "Cancelled";
             break;
     }
 

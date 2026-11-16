@@ -28,12 +28,6 @@
 
 #include "hid.h"
 #include <hidapi/hidapi.h>
-#if defined(_WIN32) && defined(HID_API_MAKE_VERSION)
-#if HID_API_VERSION >= HID_API_MAKE_VERSION(0, 15, 0)
-#define LC_HID_WRITE_TIMEOUT
-#include <hidapi/hidapi_winapi.h>
-#endif
-#endif
 #include <errno.h>
 #include <string.h>
 #include <stdlib.h>
@@ -52,15 +46,23 @@
 
 #define USB_PACKET_LENGTH 64
 
-/*
- * hidapi gives up on a write on Windows after 1 s by default, and a Harmony
- * 880 on Windows has had its first reports time out there. The write returns
- * as soon as the remote takes the report, so this only moves when we give up
- * on one that is not taken. hidapi before 0.15 has no way to change it.
- */
-#define WRITE_TIMEOUT_MS 5000
-
 hid_device *h_dev;
+
+/*
+ * Logitech's client opens a remote twice on Windows, once to read and once to
+ * write, and keeps a read waiting on the first from the moment it opens. On
+ * Windows we do the same: h_read is a second handle to the same remote, with a
+ * read started as soon as it is opened. Elsewhere, and if the second open
+ * fails, it is h_dev.
+ */
+hid_device *h_read;
+
+static bool quiet;
+
+void HID_Quiet(bool on)
+{
+    quiet = on;
+}
 
 int InitUSB()
 {
@@ -76,6 +78,10 @@ int InitUSB()
 
 void ShutdownUSB()
 {
+    if (h_read && h_read != h_dev) {
+        hid_close(h_read);
+    }
+    h_read = NULL;
     if (h_dev) {
         hid_close(h_dev);
     }
@@ -103,6 +109,7 @@ int FindRemote(THIDINFO &hid_info)
 {
     struct hid_device_info *devs, *cur_dev;
     bool found = false;
+    h_read = NULL;
     devs = hid_enumerate(0x0, 0x0);
     cur_dev = devs;
     while (cur_dev) {
@@ -112,7 +119,15 @@ int FindRemote(THIDINFO &hid_info)
             hid_info.vid = cur_dev->vendor_id;
             hid_info.pid = cur_dev->product_id;
             hid_info.ver = cur_dev->release_number;
-            h_dev = hid_open(cur_dev->vendor_id, cur_dev->product_id, NULL);
+            h_dev = hid_open_path(cur_dev->path);
+#ifdef _WIN32
+            if (h_dev) {
+                h_read = hid_open_path(cur_dev->path);
+                if (!h_read) {
+                    debug("No second handle for reads, reading on the first");
+                }
+            }
+#endif
             found = true;
             break;
         }
@@ -124,9 +139,20 @@ int FindRemote(THIDINFO &hid_info)
         return LC_ERROR_CONNECT;
     }
 
-#ifdef LC_HID_WRITE_TIMEOUT
-    hid_winapi_set_write_timeout(h_dev, WRITE_TIMEOUT_MS);
-#endif
+    if (!h_read) {
+        h_read = h_dev;
+    } else {
+        /*
+         * Start the read that stays waiting: hidapi leaves a read that has
+         * not completed pending, and the next read picks it up.
+         */
+        uint8_t early[USB_PACKET_LENGTH];
+        int n = hid_read_timeout(h_read, early, USB_PACKET_LENGTH, 0);
+        if (n > 0) {
+            debug("The remote sent %d bytes before being asked: %02X %02X",
+                  n, early[0], early[1]);
+        }
+    }
 
     // Fill in hid_info
     const size_t buf_len = 128;
@@ -149,7 +175,8 @@ int HID_WriteReport(const uint8_t *data)
     memcpy(&newdata[1], data, USB_PACKET_LENGTH);
     int err = hid_write(h_dev, newdata, USB_PACKET_LENGTH + 1);
     if (err < 0) {
-        debug("Failed to write to device: %d (%ls)", err, hid_error(h_dev));
+        if (!quiet)
+            debug("Failed to write to device: %d (%ls)", err, hid_error(h_dev));
         return err;
     }
 
@@ -158,12 +185,13 @@ int HID_WriteReport(const uint8_t *data)
 
 int HID_ReadReport(uint8_t *data, unsigned int timeout)
 {
-    int err = hid_read_timeout(h_dev, data, USB_PACKET_LENGTH, timeout);
+    int err = hid_read_timeout(h_read, data, USB_PACKET_LENGTH, timeout);
     if (err < 0) {
-        debug("Failed to read from device: %d (%ls)", err, hid_error(h_dev));
+        debug("Failed to read from device: %d (%ls)", err, hid_error(h_read));
         return err;
     } else if (err == 0) {
-        debug("USB read timed out");
+        if (!quiet)
+            debug("USB read timed out");
         return 1;
     }
 

@@ -29,6 +29,102 @@
 #include "hid.h"
 #include "protocol.h"
 #include "remote_info.h"
+#include <chrono>
+#ifndef _WIN32
+#include <unistd.h>                 // usleep(), between version requests
+#endif
+
+/*
+ * Logitech's client (as Monster Central Control ships it) gives a write no
+ * time limit, waits 20 s for the answer to GET_VERSION and, when none comes,
+ * waits a second, resets the remote's USB state and asks once more. hidapi
+ * gives up on a write after 1 s, and an 880-platform remote that client
+ * reaches has not taken our first request in 5 s. So identifying a remote
+ * waits as long as Logitech's client does, in slices lc_cancel() can stop.
+ */
+#define PATIENT_WRITE_MS 30000
+#define VERSION_REPLY_MS 20000
+#define REPLY_SLICE_MS 500
+
+static void sleep_ms(unsigned int ms)
+{
+#ifdef _WIN32
+    Sleep(ms);
+#else
+    usleep(ms * 1000);
+#endif
+}
+
+static long long ms_since(std::chrono::steady_clock::time_point start)
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+}
+
+/*
+ * Send one report, trying again until the remote takes it, PATIENT_WRITE_MS
+ * pass or lc_cancel() asks to stop. *tries says how many sends it took: a
+ * send that timed out may still have reached the remote, so more than one
+ * means a reply may come twice.
+ */
+static int patient_write(const uint8_t *data, int *tries)
+{
+    const auto start = std::chrono::steady_clock::now();
+    int err;
+    *tries = 0;
+    HID_Quiet(true);
+    for (;;) {
+        if (lc_cancelled()) {
+            err = LC_ERROR_CANCELLED;
+            break;
+        }
+        const auto sent = std::chrono::steady_clock::now();
+        ++*tries;
+        if (!(err = HID_WriteReport(data)) || ms_since(start) >= PATIENT_WRITE_MS)
+            break;
+        // A send that fails at once (the remote gone) must not spin.
+        if (ms_since(sent) < 200)
+            sleep_ms(200);
+    }
+    HID_Quiet(false);
+    if (err == LC_ERROR_CANCELLED) {
+        debug("Cancelled while sending command %02X", data[0]);
+    } else if (err) {
+        debug("The remote took no command %02X in %lld ms (%d tries)",
+              data[0], ms_since(start), *tries);
+    } else if (*tries > 1) {
+        debug("The remote took command %02X after %lld ms (%d tries)",
+              data[0], ms_since(start), *tries);
+    }
+    return err;
+}
+
+/* Wait up to total_ms for a reply, in slices lc_cancel() can stop. */
+static int patient_read(uint8_t *data, unsigned int total_ms)
+{
+    const auto start = std::chrono::steady_clock::now();
+    int err;
+    HID_Quiet(true);
+    for (;;) {
+        if (lc_cancelled()) {
+            err = LC_ERROR_CANCELLED;
+            break;
+        }
+        err = HID_ReadReport(data, REPLY_SLICE_MS);
+        // 1 from hidapi, -ETIMEDOUT from libusb: nothing yet
+        if ((err != 1 && err != -ETIMEDOUT) || ms_since(start) >= total_ms)
+            break;
+    }
+    HID_Quiet(false);
+    if (err == LC_ERROR_CANCELLED) {
+        debug("Cancelled while waiting for a reply");
+    } else if (err) {
+        debug("No reply in %lld ms", ms_since(start));
+    } else if (ms_since(start) >= 1000) {
+        debug("The reply came after %lld ms", ms_since(start));
+    }
+    return err;
+}
 
 #define GUID_STR \
   "{%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X}"
@@ -105,15 +201,38 @@ int CRemote::GetIdentity(TRemoteInfo &ri, THIDINFO &hid, lc_callback cb,
 
     const uint8_t qid[64] = { COMMAND_GET_VERSION };
 
-    if ((err = HID_WriteReport(qid))) {
-        debug("Failed to write to remote");
-        return 1;
-    }
-
     uint8_t rsp[68];
-    if ((err = HID_ReadReport(rsp))) {
-        debug("Failed to read from remote");
-        return 1;
+    bool resent = false;
+    for (int attempt = 0; ; attempt++) {
+        int tries;
+        if (attempt) {
+            debug("Asking for the version again, after a USB reset");
+            sleep_ms(1000);
+            const uint8_t reset[64] = { COMMAND_RESET, COMMAND_RESET_USB };
+            if (patient_write(reset, &tries) == LC_ERROR_CANCELLED)
+                return LC_ERROR_CANCELLED;
+            resent = true;
+        }
+        if ((err = patient_write(qid, &tries))) {
+            debug("Failed to write to remote");
+        } else if ((err = patient_read(rsp, VERSION_REPLY_MS))) {
+            debug("Failed to read from remote");
+        } else {
+            resent = resent || tries > 1;
+            break;
+        }
+        if (err == LC_ERROR_CANCELLED)
+            return LC_ERROR_CANCELLED;
+        if (attempt == 1)
+            return 1;
+    }
+    // A request sent more than once may be answered more than once.
+    if (resent) {
+        uint8_t late[68];
+        HID_Quiet(true);
+        while (HID_ReadReport(late, 200) == 0)
+            debug("Dropped a late reply %02X", late[0]);
+        HID_Quiet(false);
     }
 
     /*
