@@ -203,8 +203,12 @@ int HID_WriteReport(const uint8_t *data)
 
 int HID_WriteReportControl(const uint8_t *data)
 {
-#if defined(HID_API_MAKE_VERSION) && \
-    HID_API_VERSION >= HID_API_MAKE_VERSION(0, 15, 0)
+#if defined(HID_API_MAKE_VERSION)
+#if HID_API_VERSION >= HID_API_MAKE_VERSION(0, 15, 0)
+#define LC_HID_OUTPUT_REPORT
+#endif
+#endif
+#ifdef LC_HID_OUTPUT_REPORT
     uint8_t newdata[USB_PACKET_LENGTH+1];
     newdata[0] = 0x00;
     memcpy(&newdata[1], data, USB_PACKET_LENGTH);
