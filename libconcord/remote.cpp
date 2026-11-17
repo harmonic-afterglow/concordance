@@ -245,6 +245,13 @@ int CRemote::GetIdentity(TRemoteInfo &ri, THIDINFO &hid, lc_callback cb,
         }
         if ((err = patient_write(qid, &tries))) {
             debug("Failed to write to remote");
+            /*
+             * A remote that took nothing in all that time takes no second
+             * round either: say so now, and leave it to the caller to reset
+             * it. The second round is for a reply that did not come.
+             */
+            if (err != LC_ERROR_CANCELLED && err != LC_ERROR_CONNECT)
+                return 1;
         } else if ((err = patient_read(rsp, VERSION_REPLY_MS))) {
             debug("Failed to read from remote");
         } else {
