@@ -243,11 +243,6 @@ int HID_WriteReportControl(const uint8_t *data)
     return -1;
 }
 
-int HID_ResetRemote()
-{
-    return LC_ERROR_UNSUPP;
-}
-
 int HID_ReadReport(uint8_t *data, unsigned int timeout)
 {
     /* Note default timeout is set to 500 in hid.h */

@@ -307,11 +307,6 @@ int lc_remote_present()
     return HID_RemotePresent() ? 1 : 0;
 }
 
-int lc_reset_remote_usb()
-{
-    return HID_ResetRemote();
-}
-
 const char *lc_strerror(int err)
 {
     switch (err) {

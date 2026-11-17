@@ -43,7 +43,7 @@
  * waits as Logitech's client does, in slices lc_cancel() can stop - but not
  * forever for a write: that remote turned out to take requests only in the
  * moment after it is plugged in, and nothing after, so a caller is better
- * told soon and left to reset the remote (lc_reset_remote_usb()).
+ * told soon, so the person can plug the remote in again.
  */
 #define PATIENT_WRITE_MS 10000
 #define VERSION_REPLY_MS 20000

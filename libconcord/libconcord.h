@@ -221,16 +221,6 @@ void lc_cancel(int on);
  */
 int lc_remote_present();
 /*
- * Make the attached remote go through USB enumeration again, as close to
- * unplugging it as the system lets an ordinary user: for a remote that takes
- * requests only in the moment after it is plugged in. A port reset on Linux
- * and macOS; on Windows the remote is ejected and Windows asked to look for
- * hardware again, and on some systems it then stays away until it is
- * plugged in again. Call it with no session open (after deinit_concord()).
- * 0 when the reset was made, LC_ERROR_UNSUPP where there is no way to.
- */
-int lc_reset_remote_usb();
-/*
  * Many functions require you to pass in a ptr which then gets pointed
  * to data that we allocate. You should then call this to clean that
  * data up when you are done with it.
