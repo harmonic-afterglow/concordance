@@ -243,7 +243,7 @@ int HID_ResetRemote()
         unsigned int vid, pid;
         if (SetupDiGetDeviceInstanceIdA(set, &info, id, sizeof(id), NULL)
             && sscanf(id, "USB\\VID_%4x&PID_%4x", &vid, &pid) == 2
-            && is_harmony_ids(vid, pid)) {
+            && is_harmony_ids(vid, pid) && pid != 0xC11F) {
             remote = info.DevInst;
             break;
         }
@@ -289,8 +289,9 @@ int HID_ResetRemote()
     int err = LC_ERROR_CONNECT;
     for (ssize_t i = 0; i < n; i++) {
         struct libusb_device_descriptor d;
+        // not the USB network remotes (900, 1000, 1100), which are no HID
         if (libusb_get_device_descriptor(list[i], &d)
-            || !is_harmony_ids(d.idVendor, d.idProduct))
+            || !is_harmony_ids(d.idVendor, d.idProduct) || d.idProduct == 0xC11F)
             continue;
         libusb_device_handle *handle;
         int r = libusb_open(list[i], &handle);
