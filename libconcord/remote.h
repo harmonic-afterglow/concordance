@@ -295,6 +295,9 @@ protected:
     virtual uint16_t GetWord(uint8_t *x)=0;
     virtual int ReadRegion(uint8_t region, uint32_t &len, uint8_t *rd,
         lc_callback cb, void *cb_arg, uint32_t cb_stage)=0;
+    // While on, a send waits until the remote takes it and a read waits for its
+    // reply: identify's first request. A no-op where the transport needs none.
+    virtual void Patient(bool on) {}
 
 public:
     CRemoteZ_Base() {};
@@ -343,6 +346,7 @@ class CRemoteZ_HID : public CRemoteZ_Base
 private:
     uint8_t m_tx_seq;
     uint8_t m_rx_seq;
+    bool m_patient = false;
     int UDP_Write(uint8_t typ, uint8_t cmd, uint32_t len=0,
         uint8_t *data=NULL);
     int UDP_Read(uint8_t &status, uint32_t &len, uint8_t *data);
@@ -359,6 +363,7 @@ protected:
     virtual int ParseParams(uint32_t len, uint8_t *data,
         TParamList &pl);
     virtual uint16_t GetWord(uint8_t *x) { return x[1]<<8 | x[0]; };
+    virtual void Patient(bool on) { m_patient = on; }
 
 public:
     CRemoteZ_HID() {};

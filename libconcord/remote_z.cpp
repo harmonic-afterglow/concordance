@@ -107,6 +107,10 @@ int CRemoteZ_HID::UDP_Write(uint8_t typ, uint8_t cmd, uint32_t len,
     fprintf(stderr, "\n");
 #endif
 
+    if (m_patient) {
+        int tries;
+        return patient_write(pkt, &tries);
+    }
     return HID_WriteReport(pkt);
 }
 
@@ -114,8 +118,8 @@ int CRemoteZ_HID::UDP_Read(uint8_t &status, uint32_t &len, uint8_t *data)
 {
     uint8_t pkt[HID_UDP_MAX_PACKET_SIZE];
     int err;
-    if ((err = HID_ReadReport(pkt))) {
-        return LC_ERROR_READ;
+    if ((err = m_patient ? patient_read(pkt, 20000) : HID_ReadReport(pkt))) {
+        return err == LC_ERROR_CANCELLED ? err : LC_ERROR_READ;
     }
 
     debug_packet("Reading packet:");
@@ -1104,16 +1108,27 @@ int CRemoteZ_Base::GetIdentity(TRemoteInfo &ri, THIDINFO &hid, lc_callback cb,
                                void *cb_arg, uint32_t cb_stage)
 {
     int err = 0;
-    if ((err = Write(TYPE_REQUEST, COMMAND_GET_SYSTEM_INFO))) {
+    /*
+     * The first request waits for the remote to take it, as a HID remote's does
+     * (CRemote::GetIdentity): an 890 asleep took nothing in hidapi's second and
+     * identify failed at once, where its mains-powered extender answered.
+     */
+    Patient(true);
+    err = Write(TYPE_REQUEST, COMMAND_GET_SYSTEM_INFO);
+    if (err) {
+        Patient(false);
         debug("Failed to write to remote");
-        return LC_ERROR_WRITE;
+        return err == LC_ERROR_CANCELLED || err == LC_ERROR_CONNECT
+            ? err : LC_ERROR_WRITE;
     }
     uint8_t rsp[USBNET_REPLY_ROOM];
     unsigned int len;
     uint8_t status;
-    if ((err = Read(status, len, rsp))) {
+    err = Read(status, len, rsp);
+    Patient(false);
+    if (err) {
         debug("Failed to read from remote");
-        return LC_ERROR_READ;
+        return err == LC_ERROR_CANCELLED ? err : LC_ERROR_READ;
     }
 
     if (cb) {
@@ -1327,6 +1342,16 @@ int FindEndSeq(uint8_t *pkt_1, uint8_t *pkt_2)
     return 0;
 }
 
+/* The first bytes of a reply that was not the one expected, for the log. */
+static void debug_reply(const char *what, const uint8_t *rsp, unsigned int rlen)
+{
+    char text[3 * 16 + 1] = "";
+    unsigned int shown = rlen + 5 < 16 ? rlen + 5 : 16;
+    for (unsigned int i = 0; i < shown; i++)
+        snprintf(text + 3 * i, 4, "%02x ", rsp[i]);
+    debug("%s: %s(%u bytes)", what, text, rlen);
+}
+
 int CRemoteZ_HID::ReadRegion(uint8_t region, uint32_t &rgn_len, uint8_t *rd,
                              lc_callback cb, void *cb_arg, uint32_t cb_stage)
 {
@@ -1381,9 +1406,11 @@ int CRemoteZ_HID::ReadRegion(uint8_t region, uint32_t &rgn_len, uint8_t *rd,
     }
     if (rsp[0] != TYPE_TCP_ACK || rsp[3] != TYPE_RESPONSE ||
         rsp[4] != COMMAND_READ_REGION) {
-         debug("Incorrect response type from remote");
+        debug_reply("Incorrect response type from remote", rsp, rlen);
         return LC_ERROR_INVALID_DATA_FROM_REMOTE;
     }
+    // what the remote said to READ_REGION: its status, and any parameters
+    debug_reply("READ_REGION answered", rsp, rlen);
 
     rgn_len = 0;
 
@@ -1406,7 +1433,7 @@ int CRemoteZ_HID::ReadRegion(uint8_t region, uint32_t &rgn_len, uint8_t *rd,
         if (rsp[0] != TYPE_TCP_ACK || rsp[3] != TYPE_RESPONSE ||
             ((rsp[4] != COMMAND_READ_REGION_DATA) &&
             (rsp[4] != COMMAND_READ_REGION_DONE))) {
-             debug("Incorrect response type from remote");
+            debug_reply("Incorrect response type from remote", rsp, rlen);
             return LC_ERROR_INVALID_DATA_FROM_REMOTE;
         }
         if (rsp[4] == COMMAND_READ_REGION_DONE) {

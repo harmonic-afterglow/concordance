@@ -1567,7 +1567,11 @@ const char *get_region_version(int index)
 int read_region_from_remote(uint8_t region, uint8_t **out, uint32_t *size,
                             lc_callback cb, void *cb_arg)
 {
-    if (!rmt || !is_usbnet_remote())
+    // Z-Wave remotes only: the 900/1000/1100 over their network link, and the
+    // 890 family and RF Wireless Extender over HID (an extender has no region 4,
+    // the user configuration a remote has; what it was programmed with is
+    // elsewhere).
+    if (!rmt || !is_z_remote())
         return LC_ERROR_UNSUPP;
     // Read once into room for any region: the remote says how big it is as
     // the read starts. Measuring first is not cheaper - it reads the whole
@@ -1576,8 +1580,11 @@ int read_region_from_remote(uint8_t region, uint8_t **out, uint32_t *size,
     const uint32_t room = REGION_READ_ROOM;
     uint8_t *buf = new uint8_t[room];
     uint32_t got = room;
-    int err = ((CRemoteZ_USBNET*)rmt)->ReadRegion(region, got, buf, cb, cb_arg,
-                                                  LC_CB_STAGE_READ_FIRMWARE);
+    int err = is_usbnet_remote()
+        ? ((CRemoteZ_USBNET*)rmt)->ReadRegion(region, got, buf, cb, cb_arg,
+                                              LC_CB_STAGE_READ_FIRMWARE)
+        : ((CRemoteZ_HID*)rmt)->ReadRegion(region, got, buf, cb, cb_arg,
+                                           LC_CB_STAGE_READ_FIRMWARE);
     if (err) {
         delete[] buf;
         // a region the remote refuses is UNSUPP; anything else, a read error

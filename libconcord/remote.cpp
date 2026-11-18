@@ -70,7 +70,7 @@ static long long ms_since(std::chrono::steady_clock::time_point start)
  * send that timed out may still have reached the remote, so more than one
  * means a reply may come twice.
  */
-static int patient_write(const uint8_t *data, int *tries)
+int patient_write(const uint8_t *data, int *tries)
 {
     const auto start = std::chrono::steady_clock::now();
     int err;
@@ -129,7 +129,7 @@ static int patient_write(const uint8_t *data, int *tries)
 }
 
 /* Wait up to total_ms for a reply, in slices lc_cancel() can stop. */
-static int patient_read(uint8_t *data, unsigned int total_ms)
+int patient_read(uint8_t *data, unsigned int total_ms)
 {
     const auto start = std::chrono::steady_clock::now();
     int err;
