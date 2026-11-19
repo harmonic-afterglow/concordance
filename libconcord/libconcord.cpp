@@ -1547,19 +1547,19 @@ static const uint32_t REGION_READ_ROOM = 32 * 1024 * 1024;
 
 int get_region_count()
 {
-    return (rmt && is_usbnet_remote()) ? ri.num_regions : 0;
+    return (rmt && is_z_remote()) ? ri.num_regions : 0;
 }
 
 int get_region_id(int index)
 {
-    if (!rmt || !is_usbnet_remote() || index < 0 || index >= ri.num_regions)
+    if (!rmt || !is_z_remote() || index < 0 || index >= ri.num_regions)
         return -1;
     return ri.region_ids[index];
 }
 
 const char *get_region_version(int index)
 {
-    if (!rmt || !is_usbnet_remote() || index < 0 || index >= ri.num_regions)
+    if (!rmt || !is_z_remote() || index < 0 || index >= ri.num_regions)
         return NULL;
     return ri.region_versions[index];
 }
@@ -1594,6 +1594,52 @@ int read_region_from_remote(uint8_t region, uint8_t **out, uint32_t *size,
     memcpy(*out, buf, got);
     delete[] buf;
     *size = got;
+    return 0;
+}
+
+int read_memory_from_remote(uint32_t addr, uint32_t size, uint8_t **out,
+                            uint32_t *got, int *status)
+{
+    *out = NULL;
+    *got = 0;
+    *status = 0;
+    if (!rmt || !is_z_remote() || is_usbnet_remote() || addr > 0xFFFFFF ||
+        size == 0 || size > (16u << 20))
+        return LC_ERROR_UNSUPP;
+    uint8_t *buf = new uint8_t[size];
+    uint32_t n = 0;
+    uint8_t refused = 0;
+    int err = ((CRemoteZ_HID*)rmt)->ReadMemory(addr, size, buf, n, refused);
+    *status = refused;
+    if (err || !n) {
+        delete[] buf;
+        return err == LC_ERROR_UNSUPP ? err : LC_ERROR_READ;
+    }
+    *out = buf;
+    *got = n;
+    return 0;
+}
+
+int read_legacy_config_region(uint8_t region, uint8_t **out, uint32_t *got,
+                              int *status)
+{
+    *out = NULL;
+    *got = 0;
+    *status = 0;
+    if (!rmt || !is_z_remote() || is_usbnet_remote())
+        return LC_ERROR_UNSUPP;
+    uint8_t *buf = NULL;
+    uint32_t n = 0;
+    uint8_t refused = 0;
+    int err = ((CRemoteZ_HID*)rmt)->ReadConfigRegionLegacy(region, &buf, n,
+                                                           refused);
+    *status = refused;
+    if (err || !n) {
+        delete[] buf;
+        return err == LC_ERROR_UNSUPP ? err : LC_ERROR_READ;
+    }
+    *out = buf;
+    *got = n;
     return 0;
 }
 

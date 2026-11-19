@@ -1104,6 +1104,51 @@ int CRemoteZ_Base::Reset(uint8_t kind)
     return 0;
 }
 
+/* The regions an HID unit lists, and their versions, into ri; for the log. */
+void CRemoteZ_Base::ListRegionsHID(TRemoteInfo &ri)
+{
+    uint8_t rsp[USBNET_REPLY_ROOM];
+    unsigned int len;
+    uint8_t status;
+    TParamList pl;
+    uint8_t rr[] = { 1, 1, 1 };
+    if (Write(TYPE_REQUEST, COMMAND_GET_REGION_IDS, 3, rr) ||
+        Read(status, len, rsp)) {
+        debug("region list: no answer");
+        return;
+    }
+    if (len < 4 || rsp[1] != COMMAND_GET_REGION_IDS || rsp[2] != STATUS_OK) {
+        debug("region list: answered %02X status %02X", rsp[1], rsp[2]);
+        return;
+    }
+    ParseParams(len, rsp, pl);
+    if (pl.count != 1) {
+        debug("region list: %u parameters", pl.count);
+        return;
+    }
+    const unsigned int rc = *(pl.p[0]-1) & 0x3F;
+    ri.num_regions = rc + 1;
+    ri.region_ids = new uint8_t[ri.num_regions];
+    ri.region_versions = new char*[ri.num_regions];
+    for (unsigned int r = 0; r <= rc; ++r) {
+        const uint8_t rn = r ? *(pl.p[0]+r-1) : 0;
+        ri.region_ids[r] = rn;
+        ri.region_versions[r] = new char[8];
+        ri.region_versions[r][0] = '\0';
+        uint8_t rv[] = { 1, 1, rn };
+        TParamList rp;
+        if (!Write(TYPE_REQUEST, COMMAND_GET_REGION_VERSION, 3, rv) &&
+            !Read(status, len, rsp) && len >= 4 &&
+            rsp[1] == COMMAND_GET_REGION_VERSION && rsp[2] == STATUS_OK) {
+            ParseParams(len, rsp, rp);
+            if (rp.count >= 1)
+                snprintf(ri.region_versions[r], 8, "%d.%d", *(rp.p[0]+1),
+                         *rp.p[0]);
+        }
+        debug("region %d, version %s", rn, ri.region_versions[r]);
+    }
+}
+
 int CRemoteZ_Base::GetIdentity(TRemoteInfo &ri, THIDINFO &hid, lc_callback cb,
                                void *cb_arg, uint32_t cb_stage)
 {
@@ -1196,6 +1241,15 @@ int CRemoteZ_Base::GetIdentity(TRemoteInfo &ri, THIDINFO &hid, lc_callback cb,
     ri.valid_config = 1;
     if (!IsUSBNet()) {
         ri.config_bytes_used = 0;
+        ri.num_regions = 0;
+        ri.region_ids = NULL;
+        ri.region_versions = NULL;
+        // An RF Wireless Extender (skins 20 and 24) has no configuration
+        // region; which regions it does have is asked, so they can be read.
+        // Only asked, and nothing hangs on it: a unit that does not answer
+        // is still identified.
+        if (ri.skin == 20 || ri.skin == 24)
+            ListRegionsHID(ri);
         return 0;
     }
 
@@ -1352,6 +1406,220 @@ static void debug_reply(const char *what, const uint8_t *rsp, unsigned int rlen)
     debug("%s: %s(%u bytes)", what, text, rlen);
 }
 
+/*
+ * The answer to a request. As in Logitech's TcpChannel, a packet with no
+ * payload is only an ACK, and the answer comes in a packet of its own: an
+ * 895 sends both at once, an RF extender one after the other.
+ */
+int CRemoteZ_HID::TCP_ReadAnswer(uint8_t &status, uint32_t &len,
+                                 uint8_t *data)
+{
+    for (int acks = 0; ; acks++) {
+        int err = TCP_Read(status, len, data);
+        if (err)
+            return err;
+        if (!(data[0] == TYPE_TCP_ACK && (int32_t)len < 1) || acks == 10)
+            return 0;
+        debug("the remote acknowledged; waiting for its answer");
+    }
+}
+
+/*
+ * A TCP channel of its own, opened by `init` over UDP and the remote's SYN
+ * (Logitech's initiate...TCPChannel). The remote's status for `init` goes to
+ * `refused`; 0 when it accepted.
+ */
+int CRemoteZ_HID::OpenChannel(uint8_t init, uint8_t &refused)
+{
+    uint8_t rsp[USBNET_REPLY_ROOM];
+    unsigned int rlen;
+    uint8_t status = 0;
+    SYN_ACKED = false;
+    refused = 0;
+    if (Write(TYPE_REQUEST, init)) {
+        debug("Failed to write to remote");
+        return LC_ERROR_WRITE;
+    }
+    if (Read(status, rlen, rsp)) {
+        debug("Failed to read from remote");
+        return LC_ERROR_READ;
+    }
+    if (rsp[1] != TYPE_RESPONSE || rsp[2] != init) {
+        debug_reply("channel answered", rsp, rlen);
+        return LC_ERROR;
+    }
+    if (rlen >= 1 && status != STATUS_OK) {
+        debug("channel %02X refused, status %02X", init, status);
+        refused = status;
+        return LC_ERROR_UNSUPP;
+    }
+    debug("Looking for syn");
+    if (TCP_Read(status, rlen, rsp)) {
+        debug("Failed to read syn from remote");
+        return LC_ERROR_READ;
+    }
+    if (rsp[0] != TYPE_TCP_SYN) {
+        debug_reply("Not a SYN packet", rsp, rlen);
+        return LC_ERROR;
+    }
+    return 0;
+}
+
+/* Our FIN, the remote's FIN-ACK and our ACK of it. */
+int CRemoteZ_HID::CloseChannel()
+{
+    uint8_t rsp[USBNET_REPLY_ROOM];
+    unsigned int rlen;
+    uint8_t status;
+    int err = 0;
+    if (TCP_Ack(false, true) || TCP_Read(status, rlen, rsp) ||
+        rsp[0] != (TYPE_TCP_ACK | TYPE_TCP_FIN) || TCP_Ack(true, false)) {
+        debug("closing the channel failed");
+        err = LC_ERROR;
+    }
+    SYN_ACKED = false;
+    return err;
+}
+
+/*
+ * Bytes of the unit's memory, from the Diagnostic service (Logitech's
+ * DiagnosticServiceProxy.readMemory): READ_MEMORY_HEADER with the start and
+ * size, each a little-endian DWORD; the answer's status; one READ_MEMORY_DATA
+ * packet with the bytes; READ_MEMORY_DONE. Asked a packet's worth at a time.
+ * Stops at the first chunk the unit refuses: got says how far it came, and
+ * refused the status it gave.
+ */
+int CRemoteZ_HID::ReadMemory(uint32_t addr, uint32_t size, uint8_t *out,
+                             uint32_t &got, uint8_t &refused)
+{
+    uint8_t rsp[USBNET_REPLY_ROOM];
+    unsigned int rlen;
+    uint8_t status;
+    got = 0;
+    int err = OpenChannel(COMMAND_INITIATE_DIAGNOSTIC_TCP_CHANNEL, refused);
+    if (err)
+        return err;
+    while (got < size && !err) {
+        const uint32_t at = addr + got;
+        const uint32_t n = size - got < 48 ? size - got : 48;
+        uint8_t cmd[8] = { (uint8_t)at, (uint8_t)(at >> 8),
+                           (uint8_t)(at >> 16), (uint8_t)(at >> 24),
+                           (uint8_t)n, (uint8_t)(n >> 8),
+                           (uint8_t)(n >> 16), (uint8_t)(n >> 24) };
+        if (TCP_Write(TYPE_REQUEST, COMMAND_READ_MEMORY_HEADER, 8, cmd)) {
+            err = LC_ERROR_WRITE;
+            break;
+        }
+        // The answer, past a DONE left from the chunk before.
+        do {
+            err = TCP_ReadAnswer(status, rlen, rsp) ? LC_ERROR_READ : 0;
+        } while (!err && rsp[3] == TYPE_RESPONSE &&
+                 rsp[4] == COMMAND_READ_MEMORY_DONE);
+        if (err)
+            break;
+        if (rsp[3] != TYPE_RESPONSE || rsp[4] != COMMAND_READ_MEMORY_HEADER) {
+            debug_reply("READ_MEMORY_HEADER answered", rsp, rlen);
+            err = LC_ERROR_INVALID_DATA_FROM_REMOTE;
+            break;
+        }
+        if (rsp[5] != STATUS_OK) {
+            debug("memory at %06X refused, status %02X", at, rsp[5]);
+            refused = rsp[5];
+            err = LC_ERROR_UNSUPP;
+            break;
+        }
+        if (TCP_ReadAnswer(status, rlen, rsp)) {
+            err = LC_ERROR_READ;
+            break;
+        }
+        if (rsp[3] != TYPE_RESPONSE || rsp[4] != COMMAND_READ_MEMORY_DATA ||
+            (int32_t)rlen < 1 || rlen > n) {
+            debug_reply("READ_MEMORY_DATA", rsp, rlen);
+            err = LC_ERROR_INVALID_DATA_FROM_REMOTE;
+            break;
+        }
+        memcpy(out + got, &rsp[5], rlen);
+        got += rlen;
+    }
+    CloseChannel();
+    return got ? 0 : err;
+}
+
+/*
+ * A configuration region in the older protocol Harmony Remote 6.0 used
+ * (ConfigurationUpdateServiceProxy.readConfigRegion), dropped by 7.x:
+ * INITIATE_CONFIG_UPDATE_TCP_CHANNEL, READ_CONFIG_REGION with the region (6.0
+ * wrote every configuration to region 0); the answer's status and the size as
+ * a little-endian DWORD; READ_CONFIG_REGION_DATA packets, acknowledged, until
+ * READ_CONFIG_REGION_DONE.
+ */
+int CRemoteZ_HID::ReadConfigRegionLegacy(uint8_t region, uint8_t **out,
+                                         uint32_t &got, uint8_t &refused)
+{
+    uint8_t rsp[USBNET_REPLY_ROOM];
+    unsigned int rlen;
+    uint8_t status;
+    *out = NULL;
+    got = 0;
+    int err = OpenChannel(COMMAND_LEGACY_INITIATE_CONFIG_UPDATE_TCP_CHANNEL,
+                          refused);
+    if (err)
+        return err;
+    uint8_t cmd[1] = { region };
+    if (TCP_Write(TYPE_REQUEST, COMMAND_LEGACY_READ_CONFIG_REGION, 1, cmd) ||
+        TCP_ReadAnswer(status, rlen, rsp)) {
+        CloseChannel();
+        return LC_ERROR_READ;
+    }
+    debug_reply("READ_CONFIG_REGION answered", rsp, rlen);
+    if (rsp[3] != TYPE_RESPONSE ||
+        rsp[4] != COMMAND_LEGACY_READ_CONFIG_REGION) {
+        CloseChannel();
+        return LC_ERROR_INVALID_DATA_FROM_REMOTE;
+    }
+    if (rsp[5] != STATUS_OK) {
+        refused = rsp[5];
+        CloseChannel();
+        return LC_ERROR_UNSUPP;
+    }
+    if ((int32_t)rlen < 5) {
+        CloseChannel();
+        return LC_ERROR_INVALID_DATA_FROM_REMOTE;
+    }
+    const uint32_t size = rsp[6] | rsp[7] << 8 | rsp[8] << 16 |
+                          (uint32_t)rsp[9] << 24;
+    debug("legacy config region %d is %u bytes", region, size);
+    if (size > (16u << 20)) {
+        CloseChannel();
+        return LC_ERROR_INVALID_DATA_FROM_REMOTE;
+    }
+    *out = new uint8_t[size ? size : 1];
+    while (true) {
+        if (TCP_ReadAnswer(status, rlen, rsp)) {
+            err = LC_ERROR_READ;
+            break;
+        }
+        if (rsp[3] != TYPE_RESPONSE) {
+            debug_reply("legacy config data", rsp, rlen);
+            err = LC_ERROR_INVALID_DATA_FROM_REMOTE;
+            break;
+        }
+        if (rsp[4] == COMMAND_LEGACY_READ_CONFIG_REGION_DONE)
+            break;
+        if (rsp[4] != COMMAND_LEGACY_READ_CONFIG_REGION_DATA ||
+            (int32_t)rlen < 0 || got + rlen > size) {
+            debug_reply("legacy config data", rsp, rlen);
+            err = LC_ERROR_INVALID_DATA_FROM_REMOTE;
+            break;
+        }
+        memcpy(*out + got, &rsp[5], rlen);
+        got += rlen;
+        TCP_Ack();
+    }
+    CloseChannel();
+    return got ? 0 : err;
+}
+
 int CRemoteZ_HID::ReadRegion(uint8_t region, uint32_t &rgn_len, uint8_t *rd,
                              lc_callback cb, void *cb_arg, uint32_t cb_stage)
 {
@@ -1363,34 +1631,9 @@ int CRemoteZ_HID::ReadRegion(uint8_t region, uint32_t &rgn_len, uint8_t *rd,
     unsigned int rlen;
     uint8_t status;
 
-    /* Start a TCP transfer */
-    if ((err = Write(TYPE_REQUEST, COMMAND_INITIATE_UPDATE_TCP_CHANNEL))) {
-        debug("Failed to write to remote");
-        return LC_ERROR_WRITE;
-    }
-
-    /* Make sure the remote is ready to start the TCP transfer */
-    if ((err = Read(status, rlen, rsp))) {
-        debug("Failed to read from remote");
-        return LC_ERROR_READ;
-    }
-
-    if (rsp[1] != TYPE_RESPONSE || rsp[2] !=
-        COMMAND_INITIATE_UPDATE_TCP_CHANNEL) {
-        return LC_ERROR;
-    }
-
-    /* Look for a SYN packet */
-    debug("Looking for syn");
-    if ((err = TCP_Read(status, rlen, rsp))) {
-        debug("Failed to read syn from remote");
-        return LC_ERROR_READ;
-    }
-
-    if (rsp[0] != TYPE_TCP_SYN) {
-        debug("Not a SYN packet!");
-        return LC_ERROR;
-    }
+    uint8_t refused;
+    if ((err = OpenChannel(COMMAND_INITIATE_UPDATE_TCP_CHANNEL, refused)))
+        return err;
 
     /* ACK it with a command to read a region */
     debug("READ_REGION");
@@ -1400,17 +1643,23 @@ int CRemoteZ_HID::ReadRegion(uint8_t region, uint32_t &rgn_len, uint8_t *rd,
         debug("Failed to write to remote");
         return LC_ERROR_WRITE;
     }
-    if ((err = TCP_Read(status, rlen, rsp))) {
+    if ((err = TCP_ReadAnswer(status, rlen, rsp))) {
         debug("Failed to read to remote");
         return LC_ERROR_READ;
     }
-    if (rsp[0] != TYPE_TCP_ACK || rsp[3] != TYPE_RESPONSE ||
-        rsp[4] != COMMAND_READ_REGION) {
-        debug_reply("Incorrect response type from remote", rsp, rlen);
-        return LC_ERROR_INVALID_DATA_FROM_REMOTE;
-    }
     // what the remote said to READ_REGION: its status, and any parameters
     debug_reply("READ_REGION answered", rsp, rlen);
+    if (rsp[3] != TYPE_RESPONSE || rsp[4] != COMMAND_READ_REGION) {
+        debug("Incorrect response type from remote");
+        CloseChannel();
+        return LC_ERROR_INVALID_DATA_FROM_REMOTE;
+    }
+    if (rsp[5] != STATUS_OK) {
+        // A no (an extender answers BAD_REGION, 0x0B, for region 8).
+        debug("region %d refused, status %02X", region, rsp[5]);
+        CloseChannel();
+        return LC_ERROR_UNSUPP;
+    }
 
     rgn_len = 0;
 
@@ -1426,7 +1675,7 @@ int CRemoteZ_HID::ReadRegion(uint8_t region, uint32_t &rgn_len, uint8_t *rd,
             debug("Failed to write to remote");
             return LC_ERROR_WRITE;
         }
-        if ((err = TCP_Read(status, rlen, rsp))) {
+        if ((err = TCP_ReadAnswer(status, rlen, rsp))) {
             debug("Failed to read to remote");
             return LC_ERROR_READ;
         }

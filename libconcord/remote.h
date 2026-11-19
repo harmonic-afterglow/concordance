@@ -282,6 +282,7 @@ public:
 // Base class for all Z-Wave remotes
 class CRemoteZ_Base : public CRemoteBase
 {
+    void ListRegionsHID(TRemoteInfo &ri);
 protected:
     struct TParamList {
         uint32_t count;
@@ -353,6 +354,9 @@ private:
     int TCP_Write(uint8_t typ, uint8_t cmd, uint32_t len=0,
         uint8_t *data=NULL);
     int TCP_Read(uint8_t &status, uint32_t &len, uint8_t *data);
+    int TCP_ReadAnswer(uint8_t &status, uint32_t &len, uint8_t *data);
+    int OpenChannel(uint8_t init, uint8_t &refused);
+    int CloseChannel();
 
 protected:
     int TCPSendAndCheck(uint8_t cmd, uint32_t len=0, uint8_t *data=NULL,
@@ -377,6 +381,10 @@ public:
     int IsUSBNet() {return false;}
     virtual int ReadRegion(uint8_t region, uint32_t &len, uint8_t *rd,
         lc_callback cb, void *cb_arg, uint32_t cb_stage);
+    int ReadMemory(uint32_t addr, uint32_t size, uint8_t *out,
+        uint32_t &got, uint8_t &refused);
+    int ReadConfigRegionLegacy(uint8_t region, uint8_t **out,
+        uint32_t &got, uint8_t &refused);
 };
 
 // 1000, 1000i

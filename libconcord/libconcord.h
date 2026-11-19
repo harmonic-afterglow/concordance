@@ -473,6 +473,25 @@ const char *get_region_version(int index);
 int read_region_from_remote(uint8_t region, uint8_t **out, uint32_t *size,
                             lc_callback cb, void *cb_arg);
 /*
+ * For the 890 family and the RF Wireless Extender over HID, two reads from
+ * Logitech's own software, neither of which changes anything:
+ *
+ * read_memory_from_remote reads `size` bytes of the unit's memory from
+ * `addr` (24 bits) with the Diagnostic service's READ_MEMORY, a packet's worth
+ * at a time. It stops at the first chunk the unit refuses; *got says how many
+ * bytes came, *status the unit's answer then (0 if none). Allocates *out
+ * (free with delete_blob()). LC_ERROR_UNSUPP if nothing came because the unit
+ * said no.
+ *
+ * read_legacy_config_region reads a configuration region with the older
+ * protocol Harmony Remote 6.0 used (READ_CONFIG_REGION, 0x97; 6.0 wrote every
+ * configuration to its region 0). Same out, got and status.
+ */
+int read_memory_from_remote(uint32_t addr, uint32_t size, uint8_t **out,
+                            uint32_t *got, int *status);
+int read_legacy_config_region(uint8_t region, uint8_t **out, uint32_t *got,
+                              int *status);
+/*
  * Write one region whole, replacing what is there. Only a region the remote
  * lists. Region 1 is Safe Mode itself (region 2 the remote's program): one
  * that does not work leaves a remote that does not start and no Safe Mode to
