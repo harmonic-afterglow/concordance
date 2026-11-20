@@ -357,6 +357,9 @@ private:
     int TCP_ReadAnswer(uint8_t &status, uint32_t &len, uint8_t *data);
     int OpenChannel(uint8_t init, uint8_t &refused);
     int CloseChannel();
+    int ReadRegionStream(uint8_t region, uint32_t &rgn_len, uint8_t *rd,
+        uint32_t capacity, uint8_t *first, uint32_t first_len,
+        lc_callback cb, void *cb_arg, uint32_t cb_stage);
 
 protected:
     int TCPSendAndCheck(uint8_t cmd, uint32_t len=0, uint8_t *data=NULL,

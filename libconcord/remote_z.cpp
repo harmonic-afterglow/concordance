@@ -1620,6 +1620,61 @@ int CRemoteZ_HID::ReadConfigRegionLegacy(uint8_t region, uint8_t **out,
     return got ? 0 : err;
 }
 
+/*
+ * A region that answers READ_REGION with its data straight away: an RF
+ * Wireless Extender (firmware 2.5) sends no status and no size, only
+ * READ_REGION_DATA packets, each acknowledged before the next. Whatever ends
+ * the stream (READ_REGION_DONE, another packet, or silence) ends the read;
+ * `first` is the first data packet, already read.
+ */
+int CRemoteZ_HID::ReadRegionStream(uint8_t region, uint32_t &rgn_len,
+                                   uint8_t *rd, uint32_t capacity,
+                                   uint8_t *first, uint32_t first_len,
+                                   lc_callback cb, void *cb_arg,
+                                   uint32_t cb_stage)
+{
+    uint8_t rsp[USBNET_REPLY_ROOM];
+    unsigned int rlen = first_len;
+    uint8_t status;
+    int cb_count = 0;
+    int last = -1;          // the sequence number of the last packet kept
+    memcpy(rsp, first, sizeof(rsp));
+    rgn_len = 0;
+    debug("region %d streams without a status", region);
+    while (true) {
+        // a packet sent again (our ACK came late) has the same number
+        if ((int32_t)rlen > 0 && rsp[1] != last) {
+            if (rd && rgn_len + rlen > capacity) {
+                debug("region %d is over %u bytes", region, capacity);
+                CloseChannel();
+                return LC_ERROR_READ;
+            }
+            if (rd)
+                memcpy(rd + rgn_len, &rsp[5], rlen);
+            rgn_len += rlen;
+            last = rsp[1];
+            if (cb)
+                cb(cb_stage, cb_count++, rgn_len, rgn_len + 1,
+                   LC_CB_COUNTER_TYPE_BYTES, cb_arg, NULL);
+        }
+        if (TCP_Ack()) {
+            debug("Failed to ack region data");
+            break;
+        }
+        if (TCP_ReadAnswer(status, rlen, rsp)) {
+            debug("region %d stopped after %u bytes", region, rgn_len);
+            break;
+        }
+        if (rsp[3] != TYPE_RESPONSE || rsp[4] != COMMAND_READ_REGION_DATA) {
+            debug_reply("region stream ended with", rsp, rlen);
+            break;
+        }
+    }
+    debug("region %d: %u bytes", region, rgn_len);
+    CloseChannel();
+    return rgn_len ? 0 : LC_ERROR_READ;
+}
+
 int CRemoteZ_HID::ReadRegion(uint8_t region, uint32_t &rgn_len, uint8_t *rd,
                              lc_callback cb, void *cb_arg, uint32_t cb_stage)
 {
@@ -1649,6 +1704,9 @@ int CRemoteZ_HID::ReadRegion(uint8_t region, uint32_t &rgn_len, uint8_t *rd,
     }
     // what the remote said to READ_REGION: its status, and any parameters
     debug_reply("READ_REGION answered", rsp, rlen);
+    if (rsp[3] == TYPE_RESPONSE && rsp[4] == COMMAND_READ_REGION_DATA)
+        return ReadRegionStream(region, rgn_len, rd, capacity, rsp, rlen, cb,
+                                cb_arg, cb_stage);
     if (rsp[3] != TYPE_RESPONSE || rsp[4] != COMMAND_READ_REGION) {
         debug("Incorrect response type from remote");
         CloseChannel();
